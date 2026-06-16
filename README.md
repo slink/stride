@@ -27,11 +27,14 @@ Each run gets a **GPX** download (or "Download all GPX") for your watch.
 1. **Geocode** address → lat/lon via Nominatim.
 2. **Fetch streets** within radius via the Overpass API (raw OSM ways/nodes).
 3. **Build graph** + **solve** inside a **Web Worker** (`worker.js`) so the UI never freezes.
+   Before solving, mid-block **degree-2 shape points are contracted** into
+   super-edges (typically ~10x fewer nodes on real OSM data), so the per-odd-node
+   Dijkstras in matching run on intersections only; GPX still traces full geometry.
 4. **Render** runs on Leaflet; **export** GPX per run.
 
 ## Files
 
-- `coverage_core.js` — the solver (graph, augmentation, Euler circuit, clustering, GPX). Runs in browser + Node.
+- `coverage_core.js` — the solver (graph, degree-2 contraction, augmentation, Euler circuit, clustering, GPX). Runs in browser + Node.
 - `worker.js` — Web Worker: Overpass JSON → graph → plan.
 - `index.html` — UI.
 - `demo.json` — offline sample.

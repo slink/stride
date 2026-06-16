@@ -250,6 +250,105 @@ function splitRuns(edges, maxMeters) {
   return runs;
 }
 
+/* ---- degree-2 chain contraction ---- *
+ * Mid-block "shape points" (degree-2 nodes between two intersections) carry no
+ * routing decision — a runner just passes through. Collapsing each maximal
+ * degree-2 chain into one super-edge shrinks the graph the solver works on
+ * (big win for augment(), which runs a Dijkstra per odd node), without changing
+ * the odd-node set, the total street length, or which streets get covered.
+ *
+ * Returns { graph, via } where `graph` is the contracted graph (a subset of the
+ * original node ids) and `via` maps "min|max" endpoint keys to the ordered list
+ * of collapsed intermediate node ids (min->max), for coordinate reconstruction.
+ *
+ * A chain is kept EXPANDED (its nodes preserved) when collapsing it would create
+ * a self-loop or a parallel edge — the simple-graph model dedups parallel edges,
+ * which would silently drop a street. Keeping it expanded is always correct. */
+function contractDeg2(G, opts = {}) {
+  const { maxMeters = Infinity, keep = null } = opts;
+  const deg = n => G.adj.get(n).length;
+  // a node anchors chains if it's not degree-2, OR it's explicitly protected
+  // (e.g. the start anchor — we must not collapse the run's start point).
+  const isJ = n => deg(n) !== 2 || (keep != null && keep.has(n));
+  const key = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+  const H = makeGraph();
+  const via = new Map();
+
+  // walk a maximal degree-2 chain from junction j, stepping to `first` next.
+  function walk(j, first) {
+    let prev = j, cur = first;
+    let len = G.adj.get(j).find(e => e.to === first).len;
+    const mids = [];
+    while (!isJ(cur)) {
+      mids.push(cur);
+      const es = G.adj.get(cur);
+      const nxt = es[0].to === prev ? es[1] : es[0];
+      len += nxt.len; prev = cur; cur = nxt.to;
+    }
+    return { end: cur, len, mids, lastBeforeEnd: mids.length ? mids[mids.length - 1] : j };
+  }
+
+  // collect each chain once (mark both directed first-steps)
+  const seen = new Set();
+  const chains = [];
+  for (const j of G.adj.keys()) {
+    if (!isJ(j)) continue;
+    for (const e of G.adj.get(j)) {
+      const dirKey = j + '>' + e.to;
+      if (seen.has(dirKey)) continue;
+      const w = walk(j, e.to);
+      seen.add(dirKey);
+      seen.add(w.end + '>' + w.lastBeforeEnd);
+      chains.push({ a: j, b: w.end, len: w.len, mids: w.mids });
+    }
+  }
+  // fully-degree-2 components (isolated loops) have no junction and are skipped
+  // by the loop above; carry them over verbatim so their streets aren't lost.
+  for (const [n, es] of G.adj) {
+    if (isJ(n) || reachesJunction(G, n, isJ)) continue;
+    H.nodes.set(n, G.nodes.get(n));
+    for (const e of es) if (n < e.to) { H.nodes.set(e.to, G.nodes.get(e.to)); addEdge(H, n, e.to, e.len); }
+  }
+
+  // add direct (no-mid) edges first so parallel chains collide against them
+  chains.sort((p, q) => p.mids.length - q.mids.length);
+  const present = new Set();
+  for (const { a, b, len, mids } of chains) {
+    const k = key(a, b);
+    // Keep a chain expanded when collapsing it would be wrong (self-loop /
+    // parallel edge) OR when the chain is longer than the cap — then splitRuns
+    // needs the interior nodes to break it into runs within the limit.
+    if (a !== b && !present.has(k) && len <= maxMeters) {
+      H.nodes.set(a, G.nodes.get(a)); H.nodes.set(b, G.nodes.get(b));
+      addEdge(H, a, b, len);
+      present.add(k);
+      if (mids.length) via.set(k, a < b ? mids.slice() : mids.slice().reverse());
+    } else {
+      // collision / self-loop: keep the chain expanded (original nodes + edges)
+      const full = [a, ...mids, b];
+      for (let i = 0; i + 1 < full.length; i++) {
+        const u = full[i], w = full[i + 1];
+        H.nodes.set(u, G.nodes.get(u)); H.nodes.set(w, G.nodes.get(w));
+        addEdge(H, u, w, G.adj.get(u).find(x => x.to === w).len);
+      }
+    }
+  }
+  return { graph: H, via };
+}
+
+/* does a degree-2 node eventually reach a junction? (false => isolated loop) */
+function reachesJunction(G, start, isJ) {
+  const seen = new Set([start]); const stack = [start];
+  while (stack.length) {
+    const n = stack.pop();
+    for (const e of G.adj.get(n)) {
+      if (isJ(e.to)) return true;
+      if (!seen.has(e.to)) { seen.add(e.to); stack.push(e.to); }
+    }
+  }
+  return false;
+}
+
 /* ---- top-level planner ---- */
 function planRuns(G, maxMeters, opts = {}) {
   // Default to a single global solve. k-means zoning was measured (see
@@ -259,14 +358,17 @@ function planRuns(G, maxMeters, opts = {}) {
   // cluster:true if you specifically want runs grouped into colored zones.
   const { startLat, startLon, cluster = false } = opts;
   G = largestComponent(G);
+  const full = G;                              // full-resolution graph for coords/stats
+  // anchor on the full graph, then protect that node so contraction keeps it.
+  const startNode = (startLat != null) ? nearestNode(full, startLat, startLon) : null;
+  const { graph: Gc, via } = contractDeg2(full, { maxMeters, keep: startNode ? new Set([startNode]) : null });
+  G = Gc;                                       // solve on the contracted graph
   let bare = 0;
   for (const [n, es] of G.adj) for (const e of es) if (n < e.to) bare += e.len;
 
   const targetZone = maxMeters * 6;
   const k = cluster ? Math.max(1, Math.round(bare / targetZone)) : 1;
   const { assign, k: kk } = clusterNodes(G, k);
-
-  const startNode = (startLat != null) ? nearestNode(G, startLat, startLon) : null;
 
   // Assign every EDGE to exactly one zone (by its smaller endpoint's cluster),
   // then build each zone subgraph from its edges — this pulls in boundary
@@ -311,17 +413,22 @@ function planRuns(G, maxMeters, opts = {}) {
     }
   }
 
-  // attach coordinate paths
+  // attach coordinate paths — expand contracted super-edges back through their
+  // collapsed shape points so the GPX traces the real street geometry.
   const M_PER_MI = 1609.344;
   let covered = 0;
+  const pushLL = (coords, id) => {
+    const p = full.nodes.get(id), ll = [p.lat, p.lon];
+    if (!coords.length || coords[coords.length - 1][0] !== ll[0] || coords[coords.length - 1][1] !== ll[1]) coords.push(ll);
+  };
   const out = runs.map((r, i) => {
     covered += r.len;
-    const coords = []; 
+    const coords = [];
     for (const e of r.edges) {
-      for (const id of [e.a, e.b]) {
-        const p = G.nodes.get(id), ll = [p.lat, p.lon];
-        if (!coords.length || coords[coords.length - 1][0] !== ll[0] || coords[coords.length - 1][1] !== ll[1]) coords.push(ll);
-      }
+      pushLL(coords, e.a);
+      const mids = via.get(e.a < e.b ? e.a + '|' + e.b : e.b + '|' + e.a);
+      if (mids) for (const m of (e.a < e.b ? mids : [...mids].reverse())) pushLL(coords, m);
+      pushLL(coords, e.b);
     }
     return { id: i + 1, length_mi: +(r.len / M_PER_MI).toFixed(2), zone: r.zone, coords };
   });
@@ -329,8 +436,8 @@ function planRuns(G, maxMeters, opts = {}) {
   return {
     runs: out,
     stats: {
-      intersections: G.nodes.size,
-      segments: [...G.adj].reduce((s, [n, es]) => s + es.filter(e => n < e.to).length, 0),
+      intersections: full.nodes.size,
+      segments: [...full.adj].reduce((s, [n, es]) => s + es.filter(e => n < e.to).length, 0),
       bare_mi: +(bare / M_PER_MI).toFixed(1),
       covered_mi: +(covered / M_PER_MI).toFixed(1),
       overhead_pct: bare ? +(100 * (covered - bare) / bare).toFixed(1) : 0,
@@ -360,7 +467,7 @@ const API = { makeGraph, setNode, addEdge, planRuns, runToGPX, haversine, neares
 // internals exposed for unit tests (not part of the public surface)
 API._internal = {
   largestComponent, allComponents, dijkstra, augment, eulerCircuit,
-  clusterNodes, splitRuns, degree, nearestNode, xmlEscape,
+  clusterNodes, splitRuns, degree, nearestNode, xmlEscape, contractDeg2,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (typeof self !== 'undefined') self.CoverageCore = API;

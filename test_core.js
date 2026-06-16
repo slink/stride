@@ -155,6 +155,75 @@ test('dijkstra distances are independent of grid traversal start', () => {
   assert.equal(dist.get('0'), 0);
 });
 
+/* ===================== degree-2 contraction ===================== */
+function bareLen(G) { let m = 0; for (const [n, es] of G.adj) for (const e of es) if (n < e.to) m += e.len; return m; }
+
+// insert one degree-2 midpoint on every edge (adds shape points, preserves geometry)
+function subdivide(G) {
+  const H = C.makeGraph(); let mid = 0;
+  for (const [n, p] of G.nodes) C.setNode(H, n, p.lat, p.lon);
+  for (const [n, es] of G.adj) for (const e of es) if (n < e.to) {
+    const id = 'm' + (mid++);
+    const pn = G.nodes.get(n), pt = G.nodes.get(e.to);
+    C.setNode(H, id, (pn.lat + pt.lat) / 2, (pn.lon + pt.lon) / 2);
+    C.addEdge(H, n, id, e.len / 2); C.addEdge(H, id, e.to, e.len / 2);
+  }
+  return H;
+}
+
+test('contraction collapses a degree-2 chain into one super-edge with via list', () => {
+  // a - x - b, x is degree 2; a and b are dead-ends (degree 1, junctions)
+  const G = C.makeGraph();
+  C.setNode(G, 'a', 0, 0); C.setNode(G, 'x', 0, 1); C.setNode(G, 'b', 0, 2);
+  C.addEdge(G, 'a', 'x', 30); C.addEdge(G, 'x', 'b', 70);
+  const { graph, via } = C._internal.contractDeg2(G);
+  assert.equal(graph.nodes.has('x'), false, 'mid-block node x is removed');
+  assert.equal(graph.nodes.has('a') && graph.nodes.has('b'), true, 'junctions kept');
+  assert.equal(graph.adj.get('a').length, 1, 'a has a single super-edge');
+  assert.equal(graph.adj.get('a')[0].to, 'b');
+  assert.equal(graph.adj.get('a')[0].len, 100, 'super-edge length is the chain sum');
+  assert.deepEqual(via.get('a|b'), ['x'], 'via records the collapsed node, min->max order');
+});
+
+test('contraction preserves total length and the odd-node set', () => {
+  const G0 = C._internal.largestComponent(synthetic(8, 6, 0.05, 0.15, null));
+  const { graph } = C._internal.contractDeg2(G0);
+  assert.equal(Math.abs(bareLen(graph) - bareLen(G0)) < 1e-6, true, 'total street length preserved');
+  const oddOf = g => new Set([...g.adj.keys()].filter(n => g.adj.get(n).length % 2 === 1));
+  const o0 = oddOf(G0);
+  // every odd junction in the original is still odd after contraction
+  for (const n of o0) if (graph.adj.has(n)) assert.equal(graph.adj.get(n).length % 2, 1, `${n} stayed odd`);
+});
+
+test('contraction keeps a chain expanded when it would collide with a direct edge', () => {
+  // a-x-b chain PLUS a direct a-b edge: collapsing the chain would create a
+  // parallel a-b edge the simple-graph model would dedup, dropping a street.
+  const G = C.makeGraph();
+  C.setNode(G, 'a', 0, 0); C.setNode(G, 'x', 1, 1); C.setNode(G, 'b', 0, 2);
+  C.addEdge(G, 'a', 'x', 30); C.addEdge(G, 'x', 'b', 30); C.addEdge(G, 'a', 'b', 100);
+  const { graph } = C._internal.contractDeg2(G);
+  let edges = 0; for (const [n, es] of graph.adj) for (const e of es) if (n < e.to) edges++;
+  assert.equal(graph.nodes.has('x'), true, 'x kept so the chain stays distinct from direct a-b');
+  assert.equal(edges, 3, 'all three original streets are still present');
+});
+
+test('a plan is invariant to degree-2 shape points (contraction is wired in)', () => {
+  const coarse = synthetic(11, 8, 0.05, 0.15, null);
+  const fine = subdivide(synthetic(11, 8, 0.05, 0.15, null));
+  const a = C.planRuns(coarse, 3 * MI, { cluster: false });
+  const b = C.planRuns(fine, 3 * MI, { cluster: false });
+  assert.equal(b.stats.covered_mi, a.stats.covered_mi, 'shape points must not change covered distance');
+  assert.equal(b.stats.n_runs, a.stats.n_runs, 'shape points must not change the number of runs');
+});
+
+test('subdivided graph still covers every original street segment', () => {
+  const fine = subdivide(synthetic(10, 7, 0.05, 0.15, null));
+  const res = C.planRuns(fine, 3 * MI, { cluster: false });
+  const want = graphEdgeSet(fine), got = planEdgeSet(res);
+  assert.equal(got.size >= want.size, true, `plan covers ${got.size}/${want.size} edges`);
+  assert.equal(res.runs.every(r => r.length_mi <= 3.001), true, 'runs within cap');
+});
+
 /* ===================== start anchoring ===================== */
 test('first run begins at the intersection nearest the start point', () => {
   const G = synthetic(24, 10, 0.05, 0.17, null);
