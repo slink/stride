@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>STR1DE — cover every street</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0d0f0a;--panel:#15180f;--paper:#eae6d5;--line:#2c3120;--accent:#c6f04a;--accent2:#ff6b3d;--muted:#7c8163}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:"Spline Sans Mono",monospace;background:var(--bg);color:var(--paper);overflow:hidden}
+  #app{display:grid;grid-template-columns:370px 1fr;height:100vh}
+  @media(max-width:760px){#app{grid-template-columns:1fr;grid-template-rows:auto 1fr}aside{max-height:46vh}}
+  aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow-y:auto}
+  .brand{padding:24px 24px 16px;border-bottom:1px solid var(--line)}
+  .brand h1{font-family:"Archivo Black",sans-serif;font-size:34px;letter-spacing:-1px;line-height:.9}
+  .brand h1 span{color:var(--accent)}
+  .brand p{font-size:11px;color:var(--muted);margin-top:8px;letter-spacing:.5px;line-height:1.5}
+  form{padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+  label{display:block;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+  input[type=text],select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--paper);padding:11px 12px;font-family:inherit;font-size:13px;border-radius:2px}
+  input[type=text]:focus,select:focus{outline:none;border-color:var(--accent)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .slider-val{color:var(--accent);float:right;letter-spacing:0}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .toggle-line{display:flex;align-items:center;gap:10px;cursor:pointer}
+  .toggle-line input{accent-color:var(--accent);width:16px;height:16px}
+  .toggle-line span{font-size:12px}
+  button.go{background:var(--accent);color:#111;border:none;padding:14px;font-family:"Archivo Black",sans-serif;font-size:14px;letter-spacing:1px;cursor:pointer;border-radius:2px;text-transform:uppercase;transition:transform .08s}
+  button.go:hover{transform:translateY(-1px)}button.go:disabled{opacity:.5;cursor:wait;transform:none}
+  button.go:focus-visible{outline:2px solid var(--paper);outline-offset:3px}
+  .hint{font-size:10px;color:var(--muted);line-height:1.5;border-left:2px solid var(--accent2);padding-left:10px}
+  .stats{margin-top:auto;border-top:1px solid var(--line);padding:18px 24px;display:none}
+  .stats.show{display:block}
+  .stats h2{font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+  .dlall{background:var(--accent2);color:#fff;border:none;font-size:9px;letter-spacing:1px;padding:5px 9px;border-radius:2px;cursor:pointer;text-transform:uppercase;font-family:inherit}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+  .metric .n{font-family:"Archivo Black",sans-serif;font-size:22px;color:var(--accent)}
+  .metric .l{font-size:9px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+  .runlist{margin-top:14px;max-height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+  .run{display:flex;align-items:center;gap:8px;font-size:11px;padding:5px 6px;border-radius:2px;cursor:pointer}
+  .run:hover{background:var(--bg)}
+  .sw{width:18px;height:4px;border-radius:2px;flex:0 0 auto}
+  .run .mi{margin-left:auto;color:var(--muted)}
+  .run .gpx{color:var(--accent);text-decoration:none;font-size:10px;border:1px solid var(--line);padding:1px 5px;border-radius:2px}
+  .run .gpx:hover{border-color:var(--accent)}
+  .ztag{font-size:9px;color:var(--muted);border:1px solid var(--line);padding:1px 4px;border-radius:2px}
+  #map{height:100vh}.leaflet-container{background:#0d0f0a}
+  @media(max-width:760px){#map{height:54vh}}
+  .badge{position:absolute;top:16px;right:16px;z-index:500;background:var(--panel);border:1px solid var(--line);color:var(--accent2);font-size:10px;letter-spacing:1px;padding:6px 11px;border-radius:2px;text-transform:uppercase}
+  .start-pin{background:var(--accent);width:14px;height:14px;border-radius:50%;border:3px solid #111;box-shadow:0 0 0 2px var(--accent)}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid #111;border-top-color:transparent;border-radius:50%;animation:s .6s linear infinite;vertical-align:-1px;margin-right:6px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  @media(prefers-reduced-motion:reduce){.spin{animation:none}}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <h1>STR<span>1</span>DE</h1>
+      <p>COVER EVERY STREET. REPEAT NONE.<br>Runs computed in your browser.</p>
+    </div>
+    <form id="f" onsubmit="return false">
+      <div>
+        <label>Start address or place</label>
+        <input type="text" id="addr" placeholder="123 Main St, Brooklyn NY" value="Cooper Square, Manhattan"/>
+      </div>
+      <div>
+        <label>Max run length <span class="slider-val" id="mlv">5.0 mi</span></label>
+        <input type="range" id="ml" min="1" max="13" step="0.5" value="5"/>
+      </div>
+      <div>
+        <label>Coverage radius <span class="slider-val" id="rv">1.2 mi</span></label>
+        <input type="range" id="rad" min="0.4" max="3" step="0.1" value="1.2"/>
+      </div>
+      <div class="row">
+        <div><label>Surface</label>
+          <select id="net">
+            <option value="walk">Walk / paths</option>
+            <option value="drive">Roads only</option>
+            <option value="bike">Bike network</option>
+          </select></div>
+        <div><label>Zones</label>
+          <select id="clu">
+            <option value="false">One big loop</option>
+            <option value="true">Cluster by area</option>
+          </select></div>
+      </div>
+      <label class="toggle-line"><input type="checkbox" id="demo"/><span>Demo mode (offline sample)</span></label>
+      <button class="go" id="go">Plan my runs</button>
+      <p class="hint" id="hint">Enter a place, pick a max distance, and STR1DE builds a set of runs that cover every street with no repeats. Everything runs locally — your location never leaves the browser.</p>
+    </form>
+    <div class="stats" id="stats">
+      <h2>Coverage plan <button class="dlall" id="dlall">Download all GPX</button></h2>
+      <div class="grid2">
+        <div class="metric"><div class="n" id="m-runs">–</div><div class="l">Runs</div></div>
+        <div class="metric"><div class="n" id="m-cov">–</div><div class="l">Miles run</div></div>
+        <div class="metric"><div class="n" id="m-bare">–</div><div class="l">Street miles</div></div>
+        <div class="metric"><div class="n" id="m-over">–</div><div class="l">Repeat overhead</div></div>
+      </div>
+      <div class="runlist" id="runlist"></div>
+    </div>
+  </aside>
+  <div style="position:relative">
+    <div class="badge" id="badge">ready</div>
+    <div id="map"></div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="./coverage_core.js"></script>
+<script>
+const M_PER_MI = 1609.344;
+const map = L.map('map',{zoomControl:true,attributionControl:false}).setView([40.73,-73.99],13);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:19}).addTo(map);
+let layers=[], startMarker=null, current=null;
+
+const ml=document.getElementById('ml'),mlv=document.getElementById('mlv');
+const rad=document.getElementById('rad'),rv=document.getElementById('rv');
+ml.oninput=()=>mlv.textContent=(+ml.value).toFixed(1)+' mi';
+rad.oninput=()=>rv.textContent=(+rad.value).toFixed(1)+' mi';
+const badge=t=>document.getElementById('badge').textContent=t;
+
+/* ---- Overpass network filters ---- */
+const FILTERS={
+  walk:'["highway"]["highway"!~"motorway|motorway_link|trunk|trunk_link|construction|proposed|raceway"]["foot"!~"no"]',
+  drive:'["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service"]',
+  bike:'["highway"]["bicycle"!~"no"]["highway"!~"motorway|motorway_link|footway|steps|construction|proposed"]'
+};
+async function geocode(q){
+  const u='https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q);
+  const r=await fetch(u,{headers:{'Accept':'application/json'}});
+  const j=await r.json();
+  if(!j.length) throw new Error('Address not found. Try adding a city or state.');
+  return [parseFloat(j[0].lat),parseFloat(j[0].lon)];
+}
+async function overpass(lat,lon,radiusM,net){
+  const flt=FILTERS[net]||FILTERS.walk;
+  const q=`[out:json][timeout:60];(way${flt}(around:${radiusM},${lat},${lon}););(._;>;);out body;`;
+  const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q)});
+  if(!r.ok) throw new Error('OpenStreetMap is busy (Overpass '+r.status+'). Wait a moment and retry.');
+  return r.json();
+}
+
+/* ---- worker ---- */
+let worker=null;
+function solveInWorker(payload){
+  return new Promise((res,rej)=>{
+    worker&&worker.terminate();
+    worker=new Worker('./worker.js');
+    worker.onmessage=e=>{
+      const d=e.data;
+      if(d.phase==='building') badge('building graph…');
+      else if(d.phase==='solving') badge('planning runs…');
+      else if(d.phase==='done') res(d.result);
+      else if(d.error) rej(new Error(d.error));
+    };
+    worker.onerror=err=>rej(new Error(err.message||'worker failed'));
+    worker.postMessage(payload);
+  });
+}
+
+/* ---- GPX ---- */
+function downloadGPX(run){
+  const gpx=window.CoverageCore.runToGPX(run,'STR1DE Run '+run.id);
+  const blob=new Blob([gpx],{type:'application/gpx+xml'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download='stride_run_'+run.id+'.gpx';
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
+function downloadAll(){ if(!current) return; current.runs.forEach((r,i)=>setTimeout(()=>downloadGPX(r),i*250)); }
+document.getElementById('dlall').onclick=downloadAll;
+
+/* ---- render ---- */
+function render(data,label){
+  current=data;
+  layers.forEach(l=>map.removeLayer(l)); layers=[];
+  if(startMarker) map.removeLayer(startMarker);
+  const all=[];
+  data.runs.forEach((r,i)=>{
+    const line=L.polyline(r.coords,{color:r.color||hsl(i,data.runs.length),weight:4,opacity:.9}).addTo(map);
+    layers.push(line); r.coords.forEach(p=>all.push(p));
+  });
+  if(data.center){startMarker=L.marker(data.center,{icon:L.divIcon({className:'',html:'<div class="start-pin"></div>',iconSize:[14,14]})}).addTo(map);}
+  if(all.length) map.fitBounds(L.latLngBounds(all).pad(0.1));
+  const s=data.stats;
+  document.getElementById('m-runs').textContent=s.n_runs;
+  document.getElementById('m-cov').textContent=s.covered_mi;
+  document.getElementById('m-bare').textContent=s.bare_mi;
+  document.getElementById('m-over').textContent='+'+s.overhead_pct+'%';
+  const list=document.getElementById('runlist'); list.innerHTML='';
+  data.runs.forEach((r,i)=>{
+    const col=r.color||hsl(i,data.runs.length);
+    const d=document.createElement('div'); d.className='run';
+    d.innerHTML='<span class="sw" style="background:'+col+'"></span>Run '+r.id+
+      ' <span class="ztag">Z'+r.zone+'</span><span class="mi">'+r.length_mi+' mi</span>'+
+      '<a class="gpx" href="#">GPX</a>';
+    d.onmouseenter=()=>layers[i].setStyle({weight:8});
+    d.onmouseleave=()=>layers[i].setStyle({weight:4});
+    d.onclick=ev=>{ if(ev.target.classList.contains('gpx')){ev.preventDefault();downloadGPX(r);return;} map.fitBounds(layers[i].getBounds().pad(0.25)); };
+    list.appendChild(d);
+  });
+  document.getElementById('stats').classList.add('show');
+  badge(label);
+}
+function hsl(i,n){const h=(i/Math.max(n,1))*360;return 'hsl('+h+',70%,62%)';}
+
+/* ---- main action ---- */
+document.getElementById('go').onclick=async function(){
+  const btn=this, old=btn.innerHTML;
+  if(document.getElementById('demo').checked){
+    const r=await fetch('./demo.json'); const d=await r.json();
+    d.runs.forEach((run,i)=>run.color=run.color||hsl(i,d.runs.length));
+    render(d,'demo data'); return;
+  }
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span>Working…';
+  try{
+    badge('finding address…');
+    const [lat,lon]=await geocode(document.getElementById('addr').value);
+    badge('fetching streets…');
+    const osm=await overpass(lat,lon,(+rad.value)*M_PER_MI,document.getElementById('net').value);
+    const result=await solveInWorker({
+      overpass:osm, maxMeters:(+ml.value)*M_PER_MI,
+      startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true'
+    });
+    result.center=[lat,lon];
+    result.runs.forEach((run,i)=>run.color=hsl(i,result.runs.length));
+    render(result,'live · openstreetmap');
+  }catch(e){
+    badge('error'); document.getElementById('hint').textContent=e.message;
+    document.getElementById('hint').style.borderColor='var(--accent2)';
+  }finally{ btn.disabled=false; btn.innerHTML=old; }
+};
+</script>
+</body>
+</html>
