@@ -1,0 +1,25 @@
+#!/bin/sh
+# Pre-commit gate: lint (whitespace + JS syntax) then the full test suite.
+# Enabled via: git config core.hooksPath .githooks
+set -e
+
+echo "pre-commit: lint…"
+# whitespace errors and leftover merge-conflict markers in the staged diff
+git diff --cached --check
+
+# JS syntax check on staged .js files (bun build exits non-zero on parse errors)
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.js')
+for f in $staged; do
+  [ -f "$f" ] || continue
+  if ! bun build "$f" --target=node --outfile=/dev/null >/dev/null 2>&1; then
+    echo "  syntax error in $f:"
+    bun build "$f" --target=node --outfile=/dev/null
+    exit 1
+  fi
+done
+echo "  ok"
+
+echo "pre-commit: tests…"
+bun test_all.js
+
+echo "pre-commit: passed"

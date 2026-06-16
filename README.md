@@ -40,6 +40,17 @@ Each run gets a **GPX** download (or "Download all GPX") for your watch.
 - `demo.json` — offline sample.
 - `test_core.js`, `test_overpass.js`, `test_worker_sim.js` — assertion-based
   Node tests (exit non-zero on failure). Run all: `node test_all.js`.
+- `attribution.js`, `measure_partition.js` — diagnostics behind the overhead
+  and zoning decisions (not part of the app).
+
+## Development
+
+Tests run on `bun` (or `node`): `bun test_all.js`. A pre-commit hook lints
+(whitespace + JS syntax) and runs the suite. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
 
 ## Verified
 
