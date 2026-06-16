@@ -69,10 +69,44 @@ test('worker reports an error for an empty area', () => {
   assert.equal(empty.some(m => m.error), true, 'empty payload should yield an error message');
 });
 
-let pass = 0, fail = 0;
-for (const t of tests) {
-  try { t.fn(); console.log(`  ok   ${t.name}`); pass++; }
-  catch (e) { console.log(`  FAIL ${t.name}\n         ${e.message}`); fail++; }
-}
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail) process.exit(1);
+test('worker fetches elevations (when enabled) and reports climb', async () => {
+  const out = [];
+  const s = { CoverageCore: C, postMessage: m => out.push(m), onmessage: null };
+  new Function('self', 'importScripts', code)(s, () => {});
+  // stub Open-Elevation: elevation rises with latitude, so there is real gain
+  global.fetch = async (url, opts) => {
+    const { locations } = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ results: locations.map(l => ({ elevation: Math.round((l.latitude - 40.72) * 100000) })) }) };
+  };
+  try {
+    await s.onmessage({ data: { overpass: { elements }, maxMeters: 5 * MI, startLat: 40.720, startLon: -73.995, cluster: false, elevation: true } });
+  } finally { delete global.fetch; }
+  const done = out.find(m => m.phase === 'done');
+  assert.equal(out.some(m => m.phase === 'elevation'), true, 'emits an elevation phase');
+  assert.equal(typeof done.result.stats.total_gain_m, 'number', 'total climb is computed');
+  assert.equal(done.result.stats.total_gain_m > 0, true, 'varied terrain yields positive gain');
+});
+
+test('worker continues (elevation null) when the elevation fetch fails', async () => {
+  const out = [];
+  const s = { CoverageCore: C, postMessage: m => out.push(m), onmessage: null };
+  new Function('self', 'importScripts', code)(s, () => {});
+  global.fetch = async () => ({ ok: false, status: 503 });
+  try {
+    await s.onmessage({ data: { overpass: { elements }, maxMeters: 5 * MI, cluster: false, elevation: true } });
+  } finally { delete global.fetch; }
+  const done = out.find(m => m.phase === 'done');
+  assert.equal(out.some(m => m.phase === 'elevation_failed'), true, 'signals the failure');
+  assert.equal(done && !out.some(m => m.error), true, 'still produces a plan');
+  assert.equal(done.result.stats.total_gain_m, null, 'no elevation -> null, not a wrong number');
+});
+
+(async () => {
+  let pass = 0, fail = 0;
+  for (const t of tests) {
+    try { await t.fn(); console.log(`  ok   ${t.name}`); pass++; }
+    catch (e) { console.log(`  FAIL ${t.name}\n         ${e.message}`); fail++; }
+  }
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) process.exit(1);
+})();

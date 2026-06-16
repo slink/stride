@@ -90,6 +90,7 @@
             <option value="true">Cluster by area</option>
           </select></div>
       </div>
+      <label class="toggle-line"><input type="checkbox" id="ele"/><span>Include elevation (Open-Elevation; slower)</span></label>
       <label class="toggle-line"><input type="checkbox" id="demo"/><span>Demo mode (offline sample)</span></label>
       <button class="go" id="go">Plan my runs</button>
       <p class="hint" id="hint">Enter a place, pick a max distance, and STR1DE builds a set of runs that cover every street with no repeats. Everything runs locally — your location never leaves the browser.</p>
@@ -101,6 +102,7 @@
         <div class="metric"><div class="n" id="m-cov">–</div><div class="l">Miles run</div></div>
         <div class="metric"><div class="n" id="m-bare">–</div><div class="l">Street miles</div></div>
         <div class="metric"><div class="n" id="m-over">–</div><div class="l">Repeat overhead</div></div>
+        <div class="metric"><div class="n" id="m-climb">–</div><div class="l">Total climb</div></div>
       </div>
       <div class="runlist" id="runlist"></div>
     </div>
@@ -154,6 +156,8 @@ function solveInWorker(payload){
     worker.onmessage=e=>{
       const d=e.data;
       if(d.phase==='building') badge('building graph…');
+      else if(d.phase==='elevation') badge('fetching elevation…');
+      else if(d.phase==='elevation_failed') badge('elevation unavailable — continuing');
       else if(d.phase==='solving') badge('planning runs…');
       else if(d.phase==='done') res(d.result);
       else if(d.error) rej(new Error(d.error));
@@ -191,12 +195,15 @@ function render(data,label){
   document.getElementById('m-cov').textContent=s.covered_mi;
   document.getElementById('m-bare').textContent=s.bare_mi;
   document.getElementById('m-over').textContent='+'+s.overhead_pct+'%';
+  const FT=3.28084;
+  document.getElementById('m-climb').textContent = s.total_gain_m!=null ? Math.round(s.total_gain_m*FT).toLocaleString()+' ft' : '–';
   const list=document.getElementById('runlist'); list.innerHTML='';
   data.runs.forEach((r,i)=>{
     const col=r.color||hsl(i,data.runs.length);
     const d=document.createElement('div'); d.className='run';
     d.innerHTML='<span class="sw" style="background:'+col+'"></span>Run '+r.id+
       ' <span class="ztag">Z'+r.zone+'</span><span class="mi">'+r.length_mi+' mi</span>'+
+      (r.elev_gain_m!=null?'<span class="mi">↑'+Math.round(r.elev_gain_m*3.28084).toLocaleString()+' ft</span>':'')+
       '<a class="gpx" href="#">GPX</a>';
     d.onmouseenter=()=>layers[i].setStyle({weight:8});
     d.onmouseleave=()=>layers[i].setStyle({weight:4});
@@ -224,7 +231,8 @@ document.getElementById('go').onclick=async function(){
     const osm=await overpass(lat,lon,(+rad.value)*M_PER_MI,document.getElementById('net').value);
     const result=await solveInWorker({
       overpass:osm, maxMeters:(+ml.value)*M_PER_MI,
-      startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true'
+      startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true',
+      elevation:document.getElementById('ele').checked
     });
     result.center=[lat,lon];
     result.runs.forEach((run,i)=>run.color=hsl(i,result.runs.length));

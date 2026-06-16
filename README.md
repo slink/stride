@@ -21,6 +21,8 @@ python3 -m http.server 8000
 Type an address, pick max run length + radius, hit **Plan my runs**.
 Each run gets a **GPX** download (or "Download all GPX") for your watch.
 **Demo mode** runs a precomputed sample with no network needed.
+Tick **Include elevation** to fetch per-node elevation (Open-Elevation) and
+report total climb per run and overall; GPX then carries `<ele>` per point.
 
 ## How it works (all client-side)
 
@@ -80,3 +82,8 @@ git config core.hooksPath .githooks
   in dense cities; the worker keeps the UI responsive but solving still takes time.
 - **Public Overpass/Nominatim have usage limits.** For a real launch, use your
   own Overpass instance and a paid geocoder, and cache results.
+- **Elevation is off by default and best-effort.** It POSTs every node to the
+  public Open-Elevation API in batches — slow on big areas, and the public
+  instance is rate-limited and sometimes down. On any failure the plan still
+  completes with climb shown as "–" (null, never a fabricated 0). The worker
+  accepts an `elevationUrl` override for a self-hosted endpoint.
