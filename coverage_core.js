@@ -22,7 +22,7 @@ function haversine(aLat, aLon, bLat, bLon) {
 /* ---- graph helpers ---- */
 function makeGraph() { return { nodes: new Map(), adj: new Map() }; }
 
-function setNode(G, id, lat, lon) { G.nodes.set(String(id), { lat, lon }); }
+function setNode(G, id, lat, lon, ele) { G.nodes.set(String(id), { lat, lon, ele }); }
 
 function addEdge(G, u, v, len) {
   u = String(u); v = String(v);
@@ -418,7 +418,7 @@ function planRuns(G, maxMeters, opts = {}) {
   const M_PER_MI = 1609.344;
   let covered = 0;
   const pushLL = (coords, id) => {
-    const p = full.nodes.get(id), ll = [p.lat, p.lon];
+    const p = full.nodes.get(id), ll = typeof p.ele === 'number' ? [p.lat, p.lon, p.ele] : [p.lat, p.lon];
     if (!coords.length || coords[coords.length - 1][0] !== ll[0] || coords[coords.length - 1][1] !== ll[1]) coords.push(ll);
   };
   const out = runs.map((r, i) => {
@@ -430,9 +430,21 @@ function planRuns(G, maxMeters, opts = {}) {
       if (mids) for (const m of (e.a < e.b ? mids : [...mids].reverse())) pushLL(coords, m);
       pushLL(coords, e.b);
     }
-    return { id: i + 1, length_mi: +(r.len / M_PER_MI).toFixed(2), zone: r.zone, coords };
+    // elevation gain/loss along the run (null when no data, so flat != unknown)
+    let gain = 0, loss = 0, have = false;
+    for (let j = 0; j + 1 < coords.length; j++) {
+      const a = coords[j][2], b = coords[j + 1][2];
+      if (typeof a === 'number' && typeof b === 'number') { have = true; const d = b - a; if (d > 0) gain += d; else loss -= d; }
+    }
+    return {
+      id: i + 1, length_mi: +(r.len / M_PER_MI).toFixed(2), zone: r.zone, coords,
+      elev_gain_m: have ? Math.round(gain) : null,
+      elev_loss_m: have ? Math.round(loss) : null,
+    };
   });
 
+  const gains = out.map(r => r.elev_gain_m).filter(x => x != null);
+  const losses = out.map(r => r.elev_loss_m).filter(x => x != null);
   return {
     runs: out,
     stats: {
@@ -443,6 +455,8 @@ function planRuns(G, maxMeters, opts = {}) {
       overhead_pct: bare ? +(100 * (covered - bare) / bare).toFixed(1) : 0,
       n_runs: out.length,
       zones: kk,
+      total_gain_m: gains.length ? gains.reduce((s, x) => s + x, 0) : null,
+      total_loss_m: losses.length ? losses.reduce((s, x) => s + x, 0) : null,
     },
   };
 }
@@ -454,7 +468,8 @@ function xmlEscape(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 function runToGPX(run, name) {
-  const seg = run.coords.map(([lat, lon]) => `      <trkpt lat="${lat}" lon="${lon}"></trkpt>`).join('\n');
+  const seg = run.coords.map(([lat, lon, ele]) =>
+    `      <trkpt lat="${lat}" lon="${lon}">${typeof ele === 'number' ? `<ele>${ele}</ele>` : ''}</trkpt>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="STR1DE" xmlns="http://www.topografix.com/GPX/1/1">
   <trk><name>${xmlEscape(name)}</name><trkseg>

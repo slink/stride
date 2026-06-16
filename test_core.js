@@ -264,6 +264,41 @@ test('single-edge graph plans without crashing and covers the edge', () => {
   assert.equal(res.stats.segments, 1);
 });
 
+/* ===================== elevation ===================== */
+test('per-run and total elevation gain/loss are summed along the route', () => {
+  // path a-b-c-d, b and c are mid-block (degree-2) so contraction collapses
+  // them — elevation must still be summed through the collapsed shape points.
+  const G = C.makeGraph();
+  C.setNode(G, 'a', 0, 0, 0);
+  C.setNode(G, 'b', 0, 1, 10);
+  C.setNode(G, 'c', 0, 2, 4);
+  C.setNode(G, 'd', 0, 3, 9);
+  C.addEdge(G, 'a', 'b', 100); C.addEdge(G, 'b', 'c', 100); C.addEdge(G, 'c', 'd', 100);
+  const res = C.planRuns(G, 100 * MI, { cluster: false }); // one run
+  // a-d are dead-ends, so covering the path is an out-and-back a->d->a; every
+  // climb is done both ways. eles seen: [0,10,4,9,4,10,0] => gain == loss == 21.
+  // (Counting the collapsed mid-block nodes b,c is what makes it 21, not 9.)
+  assert.equal(res.runs[0].elev_gain_m, 21, 'gain includes mid-block (collapsed) nodes');
+  assert.equal(res.runs[0].elev_loss_m, 21);
+  assert.equal(res.stats.total_gain_m, 21);
+  assert.equal(res.stats.total_loss_m, 21);
+});
+
+test('elevation is reported as null (not 0) when no node has elevation data', () => {
+  const G = synthetic(6, 5, 0.05, 0.15, null);
+  const res = C.planRuns(G, 3 * MI, { cluster: false });
+  assert.equal(res.stats.total_gain_m, null, 'no data must not masquerade as flat (0)');
+  assert.equal(res.runs[0].elev_gain_m, null);
+});
+
+test('GPX embeds <ele> when present and omits it when absent', () => {
+  const withEle = C.runToGPX({ coords: [[40.7, -74.0, 12], [40.71, -74.01, 25]] }, 'R');
+  assert.equal(withEle.includes('<ele>12</ele>'), true);
+  assert.equal(withEle.includes('<ele>25</ele>'), true);
+  const noEle = C.runToGPX({ coords: [[40.7, -74.0], [40.71, -74.01]] }, 'R');
+  assert.equal(noEle.includes('<ele>'), false, 'no elevation -> no <ele> tag');
+});
+
 /* ===================== GPX export ===================== */
 test('GPX is well-formed and has one trkpt per coordinate', () => {
   const run = { coords: [[40.7, -74.0], [40.71, -74.01], [40.72, -74.02]] };
