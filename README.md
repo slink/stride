@@ -5,14 +5,14 @@ chosen length, minimizing repeats — **entirely in the browser**. No backend.
 
 ![STR1DE coverage plan for Cooper Square, Manhattan](screenshot.jpg)
 
-*A real plan: Cooper Square, Manhattan — 1.2 mi radius, 5 mi max run. **106 runs,
-523.3 miles run to cover 440.2 street miles** (+18.9% repeat overhead). Each
-color is one run.*
+*A real plan: Cooper Square, Manhattan — 1.2 mi radius, 5 mi max run. **102 runs,
+502.2 miles run to cover 440.2 street miles** (+14.1% repeat overhead), solved in
+about 2 s in the browser. Each color is one run.*
 
 ## Export to your watch
 
 Every run downloads as GPX, and "Download all GPX" grabs the set. This is
-actual output from the plan above — run 1, 4.96 mi, 323 track points:
+actual output from the plan above — run 1, 4.97 mi, 350 track points:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,7 +21,7 @@ actual output from the plan above — run 1, 4.96 mi, 323 track points:
       <trkpt lat="40.7279594" lon="-73.9913474"></trkpt>
       <trkpt lat="40.728498" lon="-73.991198"></trkpt>
       <trkpt lat="40.7286131" lon="-73.9912244"></trkpt>
-      <!-- … 320 more … -->
+      <!-- … 347 more … -->
   </trkseg></trk>
 </gpx>
 ```
