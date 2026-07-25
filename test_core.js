@@ -113,6 +113,55 @@ test('augmentation makes every node even-degree (Euler precondition)', () => {
   for (const [n, d] of deg) assert.equal(d % 2, 0, `node ${n} has odd degree ${d} after augmentation`);
 });
 
+test('matching is a perfect matching on the odd nodes (each used exactly once)', () => {
+  const G = C._internal.largestComponent(synthetic(9, 7, 0.05, 0.15, [[3, 6, 2, 4]]));
+  const odd = [...G.adj.keys()].filter(n => G.adj.get(n).length % 2 === 1);
+  const pairs = C._internal.matchOdd(G, odd);
+  assert.equal(pairs.length, odd.length / 2, `expected ${odd.length / 2} pairs, got ${pairs.length}`);
+  const used = new Set();
+  for (const [u, v] of pairs) {
+    assert.equal(used.has(u) || used.has(v), false, `node reused in matching: ${u}/${v}`);
+    assert.equal(u === v, false, 'a node cannot be matched to itself');
+    used.add(u); used.add(v);
+  }
+  assert.equal(used.size, odd.length, 'every odd node is matched exactly once');
+});
+
+test('matching beats arbitrary-order greedy on an irregular graph', () => {
+  // The old strategy: take an ARBITRARY unmatched odd node, match it to its
+  // nearest remaining partner. Pins the reason we replaced it.
+  const G = C._internal.largestComponent(synthetic(14, 10, 0.05, 0.15, [[4, 8, 3, 6]]));
+  const odd = [...G.adj.keys()].filter(n => G.adj.get(n).length % 2 === 1);
+  const unmatched = new Set(odd);
+  let oldCost = 0;
+  while (unmatched.size > 1) {
+    const u = unmatched.values().next().value; unmatched.delete(u);
+    const { dist } = C._internal.dijkstra(G, u);
+    let best = null, bd = Infinity;
+    for (const v of unmatched) { const d = dist.get(v); if (d !== undefined && d < bd) { bd = d; best = v; } }
+    if (best === null) break;
+    unmatched.delete(best); oldCost += bd;
+  }
+  const newCost = C._internal.matchOdd(G, odd).reduce((s, p) => s + p[2], 0);
+  assert.equal(newCost < oldCost, true,
+    `matching should be cheaper than arbitrary greedy: new=${newCost.toFixed(0)}m old=${oldCost.toFixed(0)}m`);
+});
+
+test('matching does not depend on graph insertion order', () => {
+  // Same graph, edges added in a different order -> identical matching weight.
+  const base = C._internal.largestComponent(synthetic(9, 7, 0.05, 0.15, [[3, 6, 2, 4]]));
+  const edges = [];
+  for (const [n, es] of base.adj) for (const e of es) if (n < e.to) edges.push([n, e.to, e.len]);
+  const shuffled = C.makeGraph();
+  for (const [n, p] of base.nodes) C.setNode(shuffled, n, p.lat, p.lon);
+  for (const [u, v, len] of edges.slice().reverse()) C.addEdge(shuffled, u, v, len);
+  const w = G => {
+    const odd = [...G.adj.keys()].filter(n => G.adj.get(n).length % 2 === 1);
+    return C._internal.matchOdd(G, odd).reduce((s, p) => s + p[2], 0);
+  };
+  assert.equal(Math.abs(w(base) - w(shuffled)) < 1e-6, true, 'matching weight must not depend on build order');
+});
+
 test('Euler circuit traverses each augmented edge exactly once and is closed', () => {
   const G0 = synthetic(6, 6, 0.05, 0.15, null);
   const G = C._internal.largestComponent(G0);

@@ -129,14 +129,18 @@ git config core.hooksPath .githooks
 
 ## Honest limits
 
-- **Heuristic, not optimal.** Odd-node matching is **greedy nearest**, not
-  optimal Blossom. Greedy is ~10–13% longer *as a matching*, but the matching
-  is a small slice of total distance, so optimal Blossom would recover only
-  ~1% of route length (measured in `attribution.js`). Not worth the complexity
-  here — the dominant overhead was zoning, not matching.
-- **Real-city overhead is ~15–19% on irregular areas** (vs ~5% on clean grids):
-  covering every street honestly requires some deadhead between odd junctions.
-  "Miles run" will exceed "street miles" by this much — expected, not a bug.
+- **Heuristic, not optimal.** Odd-node matching is sorted-greedy over each odd
+  node's 12 nearest candidates, polished by a 2-opt pass — not optimal Blossom.
+  A previous version of this README claimed better matching would recover only
+  ~1% of route length, citing `attribution.js`. **That was wrong**: it was
+  measured on synthetic grids and did not transfer. On nine real Overpass
+  extracts, replacing the old arbitrary-order greedy cut total route length by
+  3.6–9.0% (repeat overhead down 4.3–14.3 percentage points). `attribution.js`
+  has not been re-run and its figure is stale.
+- **Real-city overhead is ~14–27% on irregular areas**: covering every street
+  honestly requires some deadhead between odd junctions. "Miles run" will exceed
+  "street miles" by this much — expected, not a bug. Sparse networks are worse
+  (Brattleboro VT measures 45%) because dead-end streets must be run twice.
   (Optional `cluster:true` zoning adds ~5–7% on top for grouped runs; it was
   the default until measurement showed it costs overhead for no compactness
   gain — see `attribution.js`.)

@@ -193,9 +193,159 @@ function pathBetween(prev, src, dst) {
   return path.reverse();
 }
 
-/* ---- Chinese Postman augmentation with GREEDY odd-node matching ---- *
- * Optimal would be Blossom min-weight matching (see README). Greedy nearest
- * costs a few % extra overhead but needs no matching library client-side. */
+/* Dijkstra that stops as soon as it has SETTLED `k` nodes satisfying isTarget.
+ * On real OSM street graphs 50-70% of contracted nodes are odd, so a node's k
+ * nearest odd partners sit a few hops away: this settles a small ball instead
+ * of the whole graph, and is far cheaper than the full Dijkstra the old greedy
+ * ran per matched pair. Returns [[id, dist], ...] in increasing distance. */
+function dijkstraNearestK(G, src, isTarget, k) {
+  const dist = new Map([[src, 0]]);
+  const pq = new MinHeap(); pq.push(0, src);
+  const done = new Set(); const out = [];
+  while (pq.size && out.length < k) {
+    pq.pop();
+    const d = pq.topKey, u = pq.topVal;
+    if (done.has(u)) continue;
+    done.add(u);
+    if (u !== src && isTarget(u)) out.push([u, d]);
+    for (const e of G.adj.get(u)) {
+      const nd = d + e.len;
+      if (nd < (dist.get(e.to) ?? Infinity)) { dist.set(e.to, nd); pq.push(nd, e.to); }
+    }
+  }
+  return out;
+}
+
+/* shortest path src->dst, early-exiting once dst is settled */
+function dijkstraPath(G, src, dst) {
+  if (src === dst) return [src];
+  const dist = new Map([[src, 0]]), prev = new Map();
+  const pq = new MinHeap(); pq.push(0, src);
+  const done = new Set();
+  while (pq.size) {
+    pq.pop();
+    const d = pq.topKey, u = pq.topVal;
+    if (done.has(u)) continue;
+    done.add(u);
+    if (u === dst) break;
+    for (const e of G.adj.get(u)) {
+      const nd = d + e.len;
+      if (nd < (dist.get(e.to) ?? Infinity)) { dist.set(e.to, nd); prev.set(e.to, u); pq.push(nd, e.to); }
+    }
+  }
+  return pathBetween(prev, src, dst);
+}
+
+/* ---- odd-node matching ---- *
+ * The matching IS the overhead: covered = bare + (total matching weight), so
+ * overhead_pct == 100 * matchWeight / bare. Cutting matching weight cuts route
+ * length one-for-one.
+ *
+ * The old strategy was "take an ARBITRARY unmatched odd node, match it to its
+ * nearest partner". Arbitrary order is what hurts: a node processed late has
+ * only far-away partners left, so it eats a very long edge. Instead we take the
+ * globally shortest available candidate edge first (classic sorted greedy), then
+ * polish with 2-opt.
+ *
+ * Measured on 9 real Overpass extracts: matching weight -21..26% and total
+ * route length -3.6..9.0% (median -4.5%).
+ *
+ * COST, stated against the right baseline. The old arbitrary-order greedy can
+ * itself be made much faster without changing its output, by stopping its
+ * Dijkstra at the first settled unmatched odd node instead of exploring the
+ * whole graph. That optimization is quality-neutral, and against THAT baseline
+ * this matcher is ~4-6x SLOWER, not faster. It is only "17x faster" versus
+ * the naive full-Dijkstra-per-pair version, which is not the fair comparison.
+ * So this is a real speed-for-quality trade: on the corpus it costs a median
+ * ~+300ms (bun; ~4x that in V8) to buy 4.3-14.3 points of overhead.
+ *
+ * MATCH_K is the dial, and it is monotone: K=4 costs ~2.5x baseline and gets
+ * ~85% of the quality win; K=12 costs ~4-6x for 100%; K=24 buys ~1% more.
+ * Drop to 4 if solve latency matters more than the last point of overhead.
+ * A per-node nearest-neighbour lower bound puts optimal matching ~2x below even
+ * K=24, so Blossom still has real headroom left — this is not the ceiling. */
+const MATCH_K = 12;            // candidate partners kept per odd node
+const MATCH_2OPT_SWEEPS = 12;  // 2-opt passes (converges in far fewer)
+
+function matchOdd(G, odd) {
+  const pairs = [];
+  const dmap = new Map();      // known odd-odd shortest distances, "min|max" -> d
+  const dkey = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+  // Canonical node order. Ties are everywhere on grid-like street graphs, so if
+  // tie-breaking followed Map insertion order the matching would depend on how
+  // the graph was BUILT, not what it is — two identical graphs discovered in a
+  // different order would plan different routes. Sorting by id makes the result
+  // a function of graph content only (pinned by the shape-point invariant test).
+  const unmatched = new Set(odd.slice().sort());
+
+  // --- sorted greedy over k-nearest candidate edges, re-seeded each round ---
+  for (let round = 0; unmatched.size > 1 && round < 40; round++) {
+    const isU = n => unmatched.has(n);
+    const cand = [];
+    for (const u of unmatched)
+      for (const [v, d] of dijkstraNearestK(G, u, isU, MATCH_K)) {
+        const a = u < v ? u : v, b = u < v ? v : u;   // normalize orientation
+        cand.push([d, a, b]);
+        const k = a + '|' + b; if (!dmap.has(k)) dmap.set(k, d);
+      }
+    if (!cand.length) break;
+    cand.sort((p, q) => p[0] - q[0] || (p[1] < q[1] ? -1 : p[1] > q[1] ? 1 : 0)
+      || (p[2] < q[2] ? -1 : p[2] > q[2] ? 1 : 0));
+    let any = false;
+    for (const [d, u, v] of cand) {
+      if (!unmatched.has(u) || !unmatched.has(v)) continue;
+      unmatched.delete(u); unmatched.delete(v);
+      pairs.push([u, v, d]); any = true;
+    }
+    if (!any) break;
+  }
+  // --- stragglers: candidate-starved or unreachable. Full Dijkstra, as before.
+  while (unmatched.size > 1) {
+    const u = unmatched.values().next().value; unmatched.delete(u);
+    const { dist } = dijkstra(G, u);
+    let best = null, bd = Infinity;
+    for (const v of unmatched) { const d = dist.get(v); if (d !== undefined && d < bd) { bd = d; best = v; } }
+    if (best === null) break;
+    unmatched.delete(best);
+    pairs.push([u, best, bd]); dmap.set(dkey(u, best), bd);
+  }
+
+  // --- 2-opt: swap two pairs when it shortens their combined weight ---
+  // Only swaps whose replacement distances are ALREADY known are considered, so
+  // this stays exact (never guesses a distance) and costs no extra Dijkstras.
+  const D = (a, b) => dmap.get(dkey(a, b));
+  const nbr = new Map();
+  const addN = (a, b) => { let l = nbr.get(a); if (!l) nbr.set(a, l = []); l.push(b); };
+  for (const k of dmap.keys()) { const i = k.indexOf('|'); addN(k.slice(0, i), k.slice(i + 1)); addN(k.slice(i + 1), k.slice(0, i)); }
+  const owner = new Map();
+  pairs.forEach((p, i) => { owner.set(p[0], i); owner.set(p[1], i); });
+  for (let sweep = 0; sweep < MATCH_2OPT_SWEEPS; sweep++) {
+    let improved = false;
+    for (let i = 0; i < pairs.length; i++) {
+      const a = pairs[i][0], b = pairs[i][1], cur = pairs[i][2];
+      const cands = (nbr.get(a) || []).concat(nbr.get(b) || []);
+      for (const x of cands) {
+        const j = owner.get(x);
+        if (j === undefined || j === i) continue;
+        const c = pairs[j][0], d = pairs[j][1];
+        let bestSum = cur + pairs[j][2] - 1e-9, pick = null;
+        const ac = D(a, c), bd2 = D(b, d), ad = D(a, d), bc = D(b, c);
+        if (ac !== undefined && bd2 !== undefined && ac + bd2 < bestSum) { bestSum = ac + bd2; pick = [[a, c, ac], [b, d, bd2]]; }
+        if (ad !== undefined && bc !== undefined && ad + bc < bestSum) { bestSum = ad + bc; pick = [[a, d, ad], [b, c, bc]]; }
+        if (pick) {
+          pairs[i] = pick[0]; pairs[j] = pick[1];
+          owner.set(pick[0][0], i); owner.set(pick[0][1], i);
+          owner.set(pick[1][0], j); owner.set(pick[1][1], j);
+          improved = true; break;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return pairs;
+}
+
+/* ---- Chinese Postman augmentation ---- */
 function augment(G) {
   // multigraph as edge-multiplicity map keyed "min-max"
   const mult = new Map();
@@ -203,16 +353,10 @@ function augment(G) {
   for (const [n, es] of G.adj) for (const e of es) if (n < e.to) mult.set(key(n, e.to), 1);
 
   const odd = [...G.adj.keys()].filter(n => degree(G, n) % 2 === 1);
-  // greedy: repeatedly take an odd node, Dijkstra, match to nearest unmatched odd node
-  const unmatched = new Set(odd);
-  while (unmatched.size > 1) {
-    const u = unmatched.values().next().value;
-    unmatched.delete(u);
-    // u is already removed from `unmatched`, so it cannot match itself
-    const { best, prev } = dijkstraNearest(G, u, unmatched);
-    if (best === null) { break; }
-    unmatched.delete(best);
-    const path = pathBetween(prev, u, best);
+  if (odd.length < 2) return mult;
+  for (const [u, v] of matchOdd(G, odd)) {
+    const path = dijkstraPath(G, u, v);
+    if (!path) continue;
     for (let i = 0; i + 1 < path.length; i++) {
       const k = key(path[i], path[i + 1]);
       mult.set(k, (mult.get(k) || 0) + 1);
@@ -534,7 +678,8 @@ const API = { makeGraph, setNode, addEdge, planRuns, runToGPX, haversine, neares
 // internals exposed for unit tests (not part of the public surface)
 API._internal = {
   largestComponent, allComponents, dijkstra, augment, eulerCircuit,
-  clusterNodes, splitRuns, degree, nearestNode, xmlEscape, contractDeg2, dijkstraNearest,
+  clusterNodes, splitRuns, degree, nearestNode, xmlEscape, contractDeg2,
+  dijkstraNearest, dijkstraNearestK, dijkstraPath, matchOdd,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (typeof self !== 'undefined') self.CoverageCore = API;
