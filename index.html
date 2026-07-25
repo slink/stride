@@ -92,6 +92,13 @@
             <option value="true">Cluster by area</option>
           </select></div>
       </div>
+      <div>
+        <label>Route quality</label>
+        <select id="quality">
+          <option value="fast" selected>Fast — quicker solve</option>
+          <option value="best">Best — shortest routes</option>
+        </select>
+      </div>
       <label class="toggle-line"><input type="checkbox" id="ele"/><span>Include elevation (Open-Elevation; slower)</span></label>
       <label class="toggle-line"><input type="checkbox" id="demo"/><span>Demo mode (offline sample)</span></label>
       <button class="go" id="go">Plan my runs</button>
@@ -320,7 +327,8 @@ goBtn.onclick=async function(){
     const result=await solveInWorker({
       overpass:osm, maxMeters:(+ml.value)*M_PER_MI,
       startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true',
-      elevation:document.getElementById('ele').checked
+      elevation:document.getElementById('ele').checked,
+      matchK:window.CoverageCore.MATCH_PRESETS[document.getElementById('quality').value]
     });
     result.center=[lat,lon];
     result.runs.forEach((run,i)=>run.color=hsl(i,result.runs.length));

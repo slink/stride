@@ -367,6 +367,47 @@ test('GPX escapes XML metacharacters in the run name', () => {
   assert.equal(gpx.includes('Tom &amp; Jerry &lt;St&gt; &quot;Ave&quot;'), true, 'name is entity-escaped');
 });
 
+/* ---- Fast/Best quality dial ---- */
+
+test('MATCH_PRESETS exposes fast and best, with fast the cheaper dial', () => {
+  assert.equal(typeof C.MATCH_PRESETS, 'object', 'presets are on the public API (the UI reads them)');
+  assert.equal(typeof C.MATCH_PRESETS.fast, 'number', 'fast preset exists');
+  assert.equal(typeof C.MATCH_PRESETS.best, 'number', 'best preset exists');
+  assert.ok(C.MATCH_PRESETS.fast < C.MATCH_PRESETS.best, 'fast searches fewer candidates than best');
+});
+
+test('matchK reaches the matcher rather than being silently ignored', () => {
+  // A dropped matchK would make the whole toggle a no-op while still looking
+  // like it worked, so pin that the value actually reaches matchOdd.
+  const I = C._internal;
+  const G = synthetic(9, 9, 0.12, 0.18, [[3, 5, 3, 5]]);   // holes create odd nodes
+  const Gc = I.contractDeg2(G, { maxMeters: Infinity }).graph;
+  const odd = [...Gc.adj.keys()].filter(n => Gc.adj.get(n).length % 2 === 1);
+  assert.ok(odd.length >= 4, `fixture has odd nodes to match (${odd.length})`);
+  const csr = I.buildCSR(Gc);
+  const weight = ps => ps.reduce((s, p) => s + p[2], 0);
+  const small = I.matchOdd(Gc, odd, csr, I.csrWorkspace(csr), 1);
+  const large = I.matchOdd(Gc, odd, csr, I.csrWorkspace(csr), 12);
+  assert.equal(small.length * 2 <= odd.length, true, 'K=1 returns a valid partial/full matching');
+  assert.equal(large.length * 2 <= odd.length, true, 'K=12 returns a valid partial/full matching');
+  assert.ok(weight(large) <= weight(small) + 1e-6,
+    `more candidates must not yield a heavier matching here (${weight(large)} vs ${weight(small)})`);
+});
+
+test('both quality presets still cover every street', () => {
+  // The dial must never trade away the app's core guarantee.
+  // graphEdgeSet keys by node id and planEdgeSet by coordinate, so compare
+  // counts — the same invariant the other coverage tests in this file assert.
+  const G = synthetic(7, 7, 0.12, 0.18);
+  const want = graphEdgeSet(G);
+  for (const preset of ['fast', 'best']) {
+    const plan = C.planRuns(G, 3 * MI, { matchK: C.MATCH_PRESETS[preset] });
+    const got = planEdgeSet(plan);
+    assert.equal(got.size >= want.size, true,
+      `${preset}: plan has ${got.size} edges, graph has ${want.size}`);
+  }
+});
+
 /* ---- run all ---- */
 let pass = 0, fail = 0;
 for (const t of tests) {

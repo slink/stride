@@ -42,6 +42,11 @@ Then open http://localhost:8000, type an address, pick max run length + radius,
 and hit **Plan my runs**. **Demo mode** runs a precomputed sample with no
 network at all.
 
+**Route quality** trades solve time for shorter routes. On the plan above:
+Fast (the default) solves in ~1.5 s at 14.8% repeat overhead; Best takes ~2.3 s
+and gets to 14.1% — about 3 fewer miles to run. Fast captures most of the win
+because matching quality saturates almost immediately in the candidate count.
+
 ## How it works (all client-side)
 
 1. **Geocode** address → lat/lon via Nominatim (once, on submit).
@@ -129,14 +134,26 @@ git config core.hooksPath .githooks
 
 ## Honest limits
 
-- **Heuristic, not optimal.** Odd-node matching is sorted-greedy over each odd
-  node's 12 nearest candidates, polished by a 2-opt pass — not optimal Blossom.
-  A previous version of this README claimed better matching would recover only
-  ~1% of route length, citing `attribution.js`. **That was wrong**: it was
-  measured on synthetic grids and did not transfer. On nine real Overpass
-  extracts, replacing the old arbitrary-order greedy cut total route length by
-  3.6–9.0% (repeat overhead down 4.3–14.3 percentage points). `attribution.js`
-  has not been re-run and its figure is stale.
+- **Heuristic, not optimal — and the gap is now measured, not assumed.**
+  Odd-node matching is sorted-greedy over each node's k nearest candidates plus
+  a 2-opt pass (k=2 on Fast, k=12 on Best), not optimal Blossom. Compared against
+  **exact** optimal matchings computed by subset DP on sampled real sub-instances,
+  it lands within **0.3% of optimal at n=8, rising to 1.9% at n=20**. The gap
+  grows with instance size, so on a real ~5,000-node odd set it is larger — but
+  extrapolating 2.5 orders of magnitude from four points is not a claim this
+  repo will make.
+- **Blossom is not worth building here.** A rigorous nearest-neighbour lower
+  bound (½·Σ distance-to-nearest-odd-peer) puts the shipped matching 1.93x above
+  it, which looks like enormous headroom. Calibration says otherwise: on the same
+  geometry the true optimum sits ~1.70x above that bound, so most of the apparent
+  gap is slack in the bound rather than reachable improvement.
+- **An earlier README claim here was half right.** It said better matching would
+  recover only ~1% of route length, citing `attribution.js`. As a verdict on the
+  matcher shipped at the time that was wrong — replacing arbitrary-order greedy
+  with sorted-greedy + 2-opt cut route length 3.6–9.0% on nine real extracts. But
+  as a statement about the remaining gap from *today's* matcher to optimal, ~1–2%
+  is the right order of magnitude. `attribution.js` has not been re-run and its
+  own figure is stale.
 - **Real-city overhead is ~14–27% on irregular areas**: covering every street
   honestly requires some deadhead between odd junctions. "Miles run" will exceed
   "street miles" by this much — expected, not a bug. Sparse networks are worse

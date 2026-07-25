@@ -44,7 +44,7 @@ async function fetchElevations(G, endpoint) {
 }
 
 self.onmessage = async (e) => {
-  const { overpass, maxMeters, startLat, startLon, cluster, elevation,
+  const { overpass, maxMeters, startLat, startLon, cluster, elevation, matchK,
           elevationUrl = 'https://api.open-elevation.com/api/v1/lookup' } = e.data;
   try {
     self.postMessage({ phase: 'building' });
@@ -55,7 +55,7 @@ self.onmessage = async (e) => {
       catch (err) { self.postMessage({ phase: 'elevation_failed', detail: String(err && err.message || err) }); }
     }
     self.postMessage({ phase: 'solving' });
-    const result = C.planRuns(G, maxMeters, { startLat, startLon, cluster });
+    const result = C.planRuns(G, maxMeters, { startLat, startLon, cluster, matchK });
     self.postMessage({ phase: 'done', result });
   } catch (err) {
     self.postMessage({ error: String(err && err.message || err) });

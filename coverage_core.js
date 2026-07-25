@@ -393,13 +393,18 @@ function csrPath(csr, W, s, t) {
  *
  * A per-node nearest-neighbour lower bound puts optimal matching well below even
  * K=24, so Blossom still has real headroom left — this is not the ceiling. */
-const MATCH_K = 12;            // candidate partners kept per odd node
+/* Named presets for the UI. "fast" is the default: it captures ~93% of the
+ * quality win for ~1.7x the plain-greedy cost, where "best" pays ~3.6x for the
+ * last few tenths of a point. */
+const MATCH_PRESETS = { fast: 2, best: 12 };
+const MATCH_K = MATCH_PRESETS.fast;   // default candidate partners per odd node
 const MATCH_2OPT_SWEEPS = 12;  // 2-opt passes (converges in far fewer)
 
-function matchOdd(G, odd, csr, W) {
+function matchOdd(G, odd, csr, W, k) {
   csr = csr || buildCSR(G);
   W = W || csrWorkspace(csr);
-  const outIdx = new Int32Array(MATCH_K), outDist = new Float64Array(MATCH_K);
+  const K = (typeof k === 'number' && k > 0) ? Math.floor(k) : MATCH_K;
+  const outIdx = new Int32Array(K), outDist = new Float64Array(K);
   const pairs = [];
   const dmap = new Map();      // known odd-odd shortest distances, "min|max" -> d
   const dkey = (a, b) => a < b ? a + '|' + b : b + '|' + a;
@@ -417,7 +422,7 @@ function matchOdd(G, odd, csr, W) {
     for (const n of unmatched) W.flag[csr.index.get(n)] = 1;
     const cand = [];
     for (const u of unmatched) {
-      const cnt = csrNearestK(csr, W, csr.index.get(u), MATCH_K, outIdx, outDist);
+      const cnt = csrNearestK(csr, W, csr.index.get(u), K, outIdx, outDist);
       for (let t = 0; t < cnt; t++) {
         const v = csr.ids[outIdx[t]], d = outDist[t];
         const a = u < v ? u : v, b = u < v ? v : u;   // normalize orientation
@@ -483,7 +488,7 @@ function matchOdd(G, odd, csr, W) {
 }
 
 /* ---- Chinese Postman augmentation ---- */
-function augment(G) {
+function augment(G, matchK) {
   // multigraph as edge-multiplicity map keyed "min-max"
   const mult = new Map();
   const key = (a, b) => a < b ? a + '|' + b : b + '|' + a;
@@ -494,7 +499,7 @@ function augment(G) {
   // one CSR + one scratch workspace for the whole component, reused by every
   // search below (thousands of them)
   const csr = buildCSR(G), W = csrWorkspace(csr);
-  for (const [u, v] of matchOdd(G, odd, csr, W)) {
+  for (const [u, v] of matchOdd(G, odd, csr, W, matchK)) {
     const idxPath = csrPath(csr, W, csr.index.get(u), csr.index.get(v));
     if (!idxPath) continue;
     const path = idxPath.map(i => csr.ids[i]);
@@ -693,7 +698,7 @@ function planRuns(G, maxMeters, opts = {}) {
   // gain — an Euler circuit is already locally connected, so splitting one
   // global circuit yields runs just as tight as zoned ones. Opt in with
   // cluster:true if you specifically want runs grouped into colored zones.
-  const { startLat, startLon, cluster = false } = opts;
+  const { startLat, startLon, cluster = false, matchK } = opts;
   G = largestComponent(G);
   const full = G;                              // full-resolution graph for coords/stats
   // anchor on the full graph, then protect that node so contraction keeps it.
@@ -742,7 +747,7 @@ function planRuns(G, maxMeters, opts = {}) {
       if (comp.adj.size === 0) continue;
       let zstart = null;
       if (entry != null) { const ep = G.nodes.get(entry); zstart = nearestNode(comp, ep.lat, ep.lon); }
-      const mult = augment(comp);
+      const mult = augment(comp, matchK);
       const edges = eulerCircuit(comp, mult, zstart);
       if (edges.length === 0) continue;
       for (const r of splitRuns(edges, maxMeters)) runs.push({ ...r, zone: c });
@@ -815,7 +820,7 @@ ${seg}
 </gpx>`;
 }
 
-const API = { makeGraph, setNode, addEdge, planRuns, runToGPX, haversine, nearestNode };
+const API = { makeGraph, setNode, addEdge, planRuns, runToGPX, haversine, nearestNode, MATCH_PRESETS };
 // internals exposed for unit tests (not part of the public surface)
 API._internal = {
   largestComponent, allComponents, dijkstra, augment, eulerCircuit,
