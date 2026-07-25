@@ -140,9 +140,10 @@ git config core.hooksPath .githooks
   (Optional `cluster:true` zoning adds ~5–7% on top for grouped runs; it was
   the default until measurement showed it costs overhead for no compactness
   gain — see `attribution.js`.)
-- **Big radii are slow.** The Manhattan plan above took minutes of solve time in
-  the worker, not seconds — the payload is large and the matching is quadratic in
-  odd nodes. The UI stays responsive, but keep the radius modest in dense cities.
+- **Big radii mean big payloads.** The plan above is ~7 MB of OSM JSON and about
+  1.2 s of solve time in the worker; the download dominates, not the solve. (It
+  used to be 113 s of solve — `augment()` ran a full-graph Dijkstra per matched
+  pair when the answer was ~17 nodes away. Fixed; see the commit history.)
 - **Elevation is off by default and best-effort.** It POSTs every node to the
   public Open-Elevation API in batches — slow on big areas, and the public
   instance is rate-limited and sometimes down. On any failure the plan still
