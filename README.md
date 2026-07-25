@@ -74,8 +74,10 @@ graph builder actually reads (node coordinates and way node-refs — tags are
 filtered server-side anyway) and delta-coded as integers at OSM's native 1e7
 precision. That same area becomes **0.94 MB, a 7.5x reduction, losslessly**:
 rebuilding the graph from cache yields an identical node count, edge count, and
-total length. Entries are evicted least-recently-used when the quota is hit, and
-an area too large to cache is simply not cached rather than breaking the plan.
+total length. In practice about two dense-city areas fit at once (two cached
+Manhattan areas measured 3.8 MB of quota), so entries are evicted
+least-recently-used when the quota is hit, and an area too large to cache is
+simply not cached rather than breaking the plan.
 
 **Rate limiting.** After a network fetch, the plan button is disabled for 60 s
 with a countdown. The timestamp lives in `localStorage`, so reloading the page
