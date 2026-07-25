@@ -142,6 +142,13 @@ const rad=document.getElementById('rad'),rv=document.getElementById('rv');
 ml.oninput=()=>mlv.textContent=(+ml.value).toFixed(1)+' mi';
 rad.oninput=()=>rv.textContent=(+rad.value).toFixed(1)+' mi';
 const badge=t=>document.getElementById('badge').textContent=t;
+/* The hint doubles as the error panel. Capture its resting state at load so an
+ * error can be cleared — otherwise a failed plan leaves red text sitting there
+ * through every later success. */
+const hintEl=document.getElementById('hint');
+const HINT_DEFAULT=hintEl.textContent;
+function showError(msg){ hintEl.textContent=msg; hintEl.style.borderColor='var(--accent2)'; }
+function clearError(){ hintEl.textContent=HINT_DEFAULT; hintEl.style.borderColor=''; }
 
 /* ---- Overpass network filters ---- */
 const FILTERS={
@@ -183,7 +190,27 @@ async function geocode(q){
   cache.putGeocode(q,ll);
   return ll;
 }
-async function overpass(lat,lon,radiusM,net){
+/* Public Overpass instances, tried STRICTLY IN ORDER and never raced. Racing
+ * them would double the load on volunteer infrastructure to save one user a few
+ * seconds — exactly the trade this app exists not to make. A mirror is only
+ * contacted after the one before it has already failed. */
+const OVERPASS_ENDPOINTS=[
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter'
+];
+
+/* Overloaded public servers are the single most likely failure, so say what to
+ * do about it rather than just reporting a number. */
+function overpassMessage(status){
+  if(status===429) return 'OpenStreetMap is rate-limiting this connection. Wait a minute before planning again.';
+  if(status===502||status===503||status===504)
+    return 'OpenStreetMap’s public servers are overloaded — every mirror timed out. Try again in a minute, '+
+           'or pull the coverage radius down: a smaller area is a far cheaper query and usually gets through.';
+  if(status===400) return 'OpenStreetMap rejected the query. That’s a bug in STR1DE, not something you did.';
+  return 'OpenStreetMap returned an error (Overpass '+status+'). Try again in a moment.';
+}
+
+async function overpass(lat,lon,radiusM,net,onRetry){
   const area={lat,lon,radiusM,net};
   const hit=cache.getOverpass(area);
   if(hit) return {data:hit,cached:true};
@@ -192,14 +219,44 @@ async function overpass(lat,lon,radiusM,net){
   const left=NC.cooldownRemaining(Date.now(),lastFetchAt(),COOLDOWN_MS);
   if(left>0) throw new Error('Cooling down — '+Math.ceil(left/1000)+'s before the next Overpass request.');
   const flt=FILTERS[net]||FILTERS.walk;
-  const q=`[out:json][timeout:60];(way${flt}(around:${radiusM},${lat},${lon}););(._;>;);out body;`;
-  cache.noteFetch(Date.now());   // start the cooldown at the attempt, so a 429 backs off too
-  const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q)});
-  if(r.status===429) throw new Error('Overpass is rate-limiting this address. Wait a minute and retry.');
-  if(!r.ok) throw new Error('OpenStreetMap is busy (Overpass '+r.status+'). Wait a moment and retry.');
-  const data=await r.json();
-  cache.putOverpass(area,data);     // oversize areas simply are not cached
-  return {data,cached:false};
+  /* `out skel` drops tags and metadata. graphFromOverpass reads only
+   * id/lat/lon/nodes, and the highway filtering already happened server-side, so
+   * every tag byte was downloaded and discarded: 7.3 MB -> 4.1 MB raw on the
+   * default area (0.81 -> 0.57 MB gzipped) and half the JSON to parse, for a
+   * byte-identical plan. Deliberately NOT `qt`: quadtile ordering reorders
+   * elements, which changes the Euler circuit's start and the run boundaries. */
+  const q=`[out:json][timeout:60];(way${flt}(around:${radiusM},${lat},${lon}););(._;>;);out skel;`;
+  cache.noteFetch(Date.now());   // cooldown starts at the attempt, so a 429 backs off too
+  let lastMsg=null;
+  for(let i=0;i<OVERPASS_ENDPOINTS.length;i++){
+    if(i){ onRetry&&onRetry(); await new Promise(s=>setTimeout(s,1500)); }
+    let r;
+    try{
+      r=await fetch(OVERPASS_ENDPOINTS[i],{method:'POST',body:'data='+encodeURIComponent(q)});
+    }catch(e){
+      lastMsg='Couldn’t reach OpenStreetMap. Check your connection and try again.';
+      continue;                      // network-level failure: the mirror is worth a try
+    }
+    if(r.ok){
+      const data=await r.json();
+      /* A 200 is not proof of a usable answer. Regional instances happily return
+       * an empty result for anywhere outside their extract (measured: one mirror
+       * answers Manhattan with 0 elements in 3.6s), which would surface as
+       * "no streets found" instead of a plan. Treat empty as a failure while
+       * another endpoint remains — a genuinely empty area then still reports
+       * empty once the last one agrees. */
+      if(data.elements&&data.elements.length===0&&i+1<OVERPASS_ENDPOINTS.length){
+        lastMsg='OpenStreetMap returned no data for that area.';
+        continue;
+      }
+      cache.putOverpass(area,data);  // oversize areas simply are not cached
+      return {data,cached:false};
+    }
+    lastMsg=overpassMessage(r.status);
+    // a rejected query fails identically everywhere; don't spend a mirror on it
+    if(r.status>=400&&r.status<500&&r.status!==429) break;
+  }
+  throw new Error(lastMsg||'OpenStreetMap is unavailable. Try again in a moment.');
 }
 
 /* ---- worker ---- */
@@ -319,11 +376,13 @@ goBtn.onclick=async function(){
   }
   if(busy) return;   // the cooldown itself is enforced in overpass(), so cached areas still replan
   busy=true; goBtn.disabled=true; goBtn.innerHTML='<span class="spin"></span>Working…';
+  clearError();
   try{
     badge('finding address…');
     const [lat,lon]=await geocode(document.getElementById('addr').value);
     badge('fetching streets…');
-    const {data:osm,cached}=await overpass(lat,lon,(+rad.value)*M_PER_MI,document.getElementById('net').value);
+    const {data:osm,cached}=await overpass(lat,lon,(+rad.value)*M_PER_MI,
+      document.getElementById('net').value, ()=>badge('main server busy · trying mirror…'));
     const result=await solveInWorker({
       overpass:osm, maxMeters:(+ml.value)*M_PER_MI,
       startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true',
@@ -334,8 +393,7 @@ goBtn.onclick=async function(){
     result.runs.forEach((run,i)=>run.color=hsl(i,result.runs.length));
     render(result,cached?'cached · openstreetmap':'live · openstreetmap');
   }catch(e){
-    badge('error'); document.getElementById('hint').textContent=e.message;
-    document.getElementById('hint').style.borderColor='var(--accent2)';
+    badge('error'); showError(e.message);
   }finally{
     busy=false; goBtn.innerHTML=GO_LABEL; goBtn.disabled=false;
     if(NC.cooldownRemaining(Date.now(),lastFetchAt(),COOLDOWN_MS)>0) startCooldown();
