@@ -33,6 +33,8 @@
   button.go:hover{transform:translateY(-1px)}button.go:disabled{opacity:.5;cursor:wait;transform:none}
   button.go:focus-visible{outline:2px solid var(--paper);outline-offset:3px}
   .hint{font-size:10px;color:var(--muted);line-height:1.5;border-left:2px solid var(--accent2);padding-left:10px}
+  .attrib{font-size:9px;color:var(--muted);line-height:1.6;padding:0 24px 18px;opacity:.75}
+  .attrib a{color:var(--muted);text-decoration:underline}
   .stats{margin-top:auto;border-top:1px solid var(--line);padding:18px 24px;display:none}
   .stats.show{display:block}
   .stats h2{font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
@@ -106,6 +108,12 @@
       </div>
       <div class="runlist" id="runlist"></div>
     </div>
+    <p class="attrib">
+      Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors,
+      ODbL. Geocoding by <a href="https://nominatim.openstreetmap.org/">Nominatim</a>, streets via the
+      <a href="https://overpass-api.de/">Overpass API</a>, tiles by <a href="https://carto.com/attributions">CARTO</a>.
+      These are volunteer-run services — STR1DE caches results locally and rate-limits itself.
+    </p>
   </aside>
   <div style="position:relative">
     <div class="badge" id="badge">ready</div>
@@ -114,10 +122,12 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="./coverage_core.js"></script>
+<script src="./net_cache.js"></script>
 <script>
 const M_PER_MI = 1609.344;
-const map = L.map('map',{zoomControl:true,attributionControl:false}).setView([40.73,-73.99],13);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:19}).addTo(map);
+const map = L.map('map',{zoomControl:true}).setView([40.73,-73.99],13);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'}).addTo(map);
 let layers=[], startMarker=null, current=null;
 
 const ml=document.getElementById('ml'),mlv=document.getElementById('mlv');
@@ -132,19 +142,57 @@ const FILTERS={
   drive:'["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service"]',
   bike:'["highway"]["bicycle"!~"no"]["highway"!~"motorway|motorway_link|footway|steps|construction|proposed"]'
 };
+/* ---- courtesy layer for the public OSM services ----
+ * Overpass and Nominatim are volunteer-run. Every response is cached locally so
+ * a repeat plan costs no request, and a cooldown caps how fast the button can
+ * spend one. Note that a browser cannot set User-Agent (it is a forbidden
+ * header, and a custom one would force a CORS preflight — two requests instead
+ * of one), so the app identifies itself by the Referer the browser sends
+ * automatically, which is what the Nominatim policy accepts. */
+const NC=window.NetCache;
+const COOLDOWN_MS=NC.DEFAULT_COOLDOWN_MS;
+/* localStorage throws in private mode and when storage is disabled; degrade to
+ * an in-memory cache rather than losing the app. */
+function safeStore(){
+  try{ const p='stride:probe'; localStorage.setItem(p,'1'); localStorage.removeItem(p); return localStorage; }
+  catch(e){ const m=new Map(); return {getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>{m.set(k,v);},removeItem:k=>{m.delete(k);}}; }
+}
+const cache=NC.makeCache(safeStore());
+/* Read from storage, not a variable, so reloading the page cannot reset the
+ * cooldown and let someone hammer Overpass with F5. */
+const lastFetchAt=()=>cache.getLastFetchAt();
+
+/* One geocode per explicit submit — never per keystroke. Nominatim's policy
+ * forbids client-side autocomplete outright. */
 async function geocode(q){
+  const hit=cache.getGeocode(q);
+  if(hit) return hit;
   const u='https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q);
   const r=await fetch(u,{headers:{'Accept':'application/json'}});
+  if(!r.ok) throw new Error('Geocoder is busy (Nominatim '+r.status+'). Wait a moment and retry.');
   const j=await r.json();
   if(!j.length) throw new Error('Address not found. Try adding a city or state.');
-  return [parseFloat(j[0].lat),parseFloat(j[0].lon)];
+  const ll=[parseFloat(j[0].lat),parseFloat(j[0].lon)];
+  cache.putGeocode(q,ll);
+  return ll;
 }
 async function overpass(lat,lon,radiusM,net){
+  const area={lat,lon,radiusM,net};
+  const hit=cache.getOverpass(area);
+  if(hit) return {data:hit,cached:true};
+  /* The cooldown is enforced here, at the network boundary, not on the button —
+   * so a cached area can always be replanned instantly. */
+  const left=NC.cooldownRemaining(Date.now(),lastFetchAt(),COOLDOWN_MS);
+  if(left>0) throw new Error('Cooling down — '+Math.ceil(left/1000)+'s before the next Overpass request.');
   const flt=FILTERS[net]||FILTERS.walk;
   const q=`[out:json][timeout:60];(way${flt}(around:${radiusM},${lat},${lon}););(._;>;);out body;`;
+  cache.noteFetch(Date.now());   // start the cooldown at the attempt, so a 429 backs off too
   const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q)});
+  if(r.status===429) throw new Error('Overpass is rate-limiting this address. Wait a minute and retry.');
   if(!r.ok) throw new Error('OpenStreetMap is busy (Overpass '+r.status+'). Wait a moment and retry.');
-  return r.json();
+  const data=await r.json();
+  cache.putOverpass(area,data);     // oversize areas simply are not cached
+  return {data,cached:false};
 }
 
 /* ---- worker ---- */
@@ -215,20 +263,60 @@ function render(data,label){
 }
 function hsl(i,n){const h=(i/Math.max(n,1))*360;return 'hsl('+h+',70%,62%)';}
 
+/* ---- fetch cooldown ----
+ * A hard floor on how often the button can spend an Overpass request. Cache
+ * hits and demo mode never touch the network, so neither is throttled. */
+const goBtn=document.getElementById('go');
+const GO_LABEL=goBtn.innerHTML;
+let cooldownTimer=null, busy=false;
+
+/* Whether the next click would spend an Overpass request. Both lookups are
+ * local peeks — no geocoding happens here, so this is safe to call on every
+ * keystroke and cooldown tick. */
+function wouldUseNetwork(){
+  if(document.getElementById('demo').checked) return false;
+  const ll=cache.peekGeocode(document.getElementById('addr').value);
+  if(!ll) return true;
+  return !cache.hasOverpass({lat:ll[0],lon:ll[1],
+    radiusM:(+rad.value)*M_PER_MI,net:document.getElementById('net').value});
+}
+function refreshCooldown(){
+  if(busy) return;
+  const left=NC.cooldownRemaining(Date.now(),lastFetchAt(),COOLDOWN_MS);
+  if(left<=0){
+    if(cooldownTimer){ clearInterval(cooldownTimer); cooldownTimer=null; }
+    goBtn.disabled=false; goBtn.innerHTML=GO_LABEL; return;
+  }
+  if(wouldUseNetwork()){ goBtn.disabled=true; goBtn.innerHTML='Cooling down · '+Math.ceil(left/1000)+'s'; }
+  else { goBtn.disabled=false; goBtn.innerHTML=GO_LABEL; }   // cached areas replan instantly
+}
+function startCooldown(){
+  if(cooldownTimer) clearInterval(cooldownTimer);
+  cooldownTimer=setInterval(refreshCooldown,250);
+  refreshCooldown();
+}
+/* Re-evaluate the button when the form changes: switching back to an area that
+ * is already cached should re-enable it mid-cooldown. Local reads only. */
+['addr','rad','net','demo'].forEach(id=>{
+  const el=document.getElementById(id);
+  el.addEventListener('input',refreshCooldown);
+  el.addEventListener('change',refreshCooldown);
+});
+
 /* ---- main action ---- */
-document.getElementById('go').onclick=async function(){
-  const btn=this, old=btn.innerHTML;
+goBtn.onclick=async function(){
   if(document.getElementById('demo').checked){
     const r=await fetch('./demo.json'); const d=await r.json();
     d.runs.forEach((run,i)=>run.color=run.color||hsl(i,d.runs.length));
     render(d,'demo data'); return;
   }
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span>Working…';
+  if(busy) return;   // the cooldown itself is enforced in overpass(), so cached areas still replan
+  busy=true; goBtn.disabled=true; goBtn.innerHTML='<span class="spin"></span>Working…';
   try{
     badge('finding address…');
     const [lat,lon]=await geocode(document.getElementById('addr').value);
     badge('fetching streets…');
-    const osm=await overpass(lat,lon,(+rad.value)*M_PER_MI,document.getElementById('net').value);
+    const {data:osm,cached}=await overpass(lat,lon,(+rad.value)*M_PER_MI,document.getElementById('net').value);
     const result=await solveInWorker({
       overpass:osm, maxMeters:(+ml.value)*M_PER_MI,
       startLat:lat, startLon:lon, cluster:document.getElementById('clu').value==='true',
@@ -236,11 +324,14 @@ document.getElementById('go').onclick=async function(){
     });
     result.center=[lat,lon];
     result.runs.forEach((run,i)=>run.color=hsl(i,result.runs.length));
-    render(result,'live · openstreetmap');
+    render(result,cached?'cached · openstreetmap':'live · openstreetmap');
   }catch(e){
     badge('error'); document.getElementById('hint').textContent=e.message;
     document.getElementById('hint').style.borderColor='var(--accent2)';
-  }finally{ btn.disabled=false; btn.innerHTML=old; }
+  }finally{
+    busy=false; goBtn.innerHTML=GO_LABEL; goBtn.disabled=false;
+    if(NC.cooldownRemaining(Date.now(),lastFetchAt(),COOLDOWN_MS)>0) startCooldown();
+  }
 };
 </script>
 </body>
