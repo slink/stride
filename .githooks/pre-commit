@@ -11,9 +11,11 @@ git diff --cached --check
 staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.js')
 for f in $staged; do
   [ -f "$f" ] || continue
-  if ! bun build "$f" --target=node --outfile=/dev/null >/dev/null 2>&1; then
+  # ./ prefix is required: a bare "test/all.js" makes bun resolve the "test"
+  # directory as the entrypoint and fail with EISDIR.
+  if ! bun build "./$f" --target=node --outfile=/dev/null >/dev/null 2>&1; then
     echo "  syntax error in $f:"
-    bun build "$f" --target=node --outfile=/dev/null
+    bun build "./$f" --target=node --outfile=/dev/null
     exit 1
   fi
 done

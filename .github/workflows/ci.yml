@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      # Same gate the pre-commit hook applies, over the whole tree rather than
+      # just the staged diff.
+      - name: Whitespace and conflict markers
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+
+      - name: JS syntax
+        run: |
+          for f in $(git ls-files '*.js'); do
+            # ./ prefix is required: a bare "test/all.js" makes bun resolve the
+            # "test" directory as the entrypoint and fail with EISDIR.
+            bun build "./$f" --target=node --outfile=/dev/null >/dev/null \
+              || { echo "syntax error in $f"; exit 1; }
+          done
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The README claims the suite runs on bun or node. Running both keeps
+        # that claim honest — the solver and cache use no runtime-specific APIs,
+        # and test/all.js spawns each suite with process.execPath, so whichever
+        # runtime starts it is the one the suites run under.
+        runtime: [bun, node]
+    name: test (${{ matrix.runtime }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'node'
+        with:
+          node-version: '22'
+
+      - run: ${{ matrix.runtime }} test/all.js
