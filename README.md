@@ -1,5 +1,7 @@
 # STR1DE — client-side street coverage planner
 
+[![CI](https://github.com/slink/stride/actions/workflows/ci.yml/badge.svg)](https://github.com/slink/stride/actions/workflows/ci.yml)
+
 Generates running routes that cover every street in an area, each under a
 chosen length, minimizing repeats — **entirely in the browser**. No backend.
 
@@ -130,8 +132,10 @@ Everything else is supporting material:
 
 ## Development
 
-Tests run on `bun` (or `node`): `bun test/all.js`. A pre-commit hook lints
-whitespace and JS syntax and runs the suite. Enable it once per clone:
+Tests run on `bun` (or `node`): `bun test/all.js`. CI runs the suite under both
+runtimes on every push, so the "or `node`" is checked rather than assumed. A
+pre-commit hook applies the same lint locally and runs the suite. Enable it once
+per clone:
 
 ```bash
 git config core.hooksPath .githooks
