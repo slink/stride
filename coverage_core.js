@@ -236,6 +236,124 @@ function dijkstraPath(G, src, dst) {
   return pathBetween(prev, src, dst);
 }
 
+/* ---- flat CSR view, for the matching hot path ---- *
+ * matchOdd() runs thousands of SMALL, early-terminating searches. Over the
+ * Map/Array graph each one pays string hashing, Map allocation and object
+ * churn; over a flat CSR it is pointer arithmetic on typed arrays.
+ *
+ * Node indices follow G.adj insertion order, so anything rebuilt from a CSR
+ * keeps the original ordering and the plan is unchanged.
+ *
+ * Scratch state is reset by EPOCH STAMP rather than by clearing the buffers.
+ * That is the whole trick: an O(nodes) fill per search would dwarf a search
+ * that settles ~17 nodes out of 14k, which is exactly the regime here. */
+function buildCSR(G) {
+  const ids = [...G.adj.keys()];
+  const n = ids.length;
+  const index = new Map();
+  for (let i = 0; i < n; i++) index.set(ids[i], i);
+  const off = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) off[i + 1] = off[i] + G.adj.get(ids[i]).length;
+  const tgt = new Int32Array(off[n]), alen = new Float64Array(off[n]);
+  for (let i = 0; i < n; i++) {
+    const es = G.adj.get(ids[i]);
+    let p = off[i];
+    for (let j = 0; j < es.length; j++, p++) { tgt[p] = index.get(es[j].to); alen[p] = es[j].len; }
+  }
+  return { ids, index, n, off, tgt, alen };
+}
+
+/* Binary min-heap over (float key, int payload) in two flat typed arrays.
+ * Sized to arcs+1, a hard bound on live entries, so push never grows. */
+class NumHeap {
+  constructor(cap) { this.k = new Float64Array(cap); this.v = new Int32Array(cap); this.n = 0; this.topKey = 0; }
+  push(key, val) {
+    const k = this.k, v = this.v;
+    let i = this.n++;
+    while (i > 0) { const p = (i - 1) >> 1; if (k[p] <= key) break; k[i] = k[p]; v[i] = v[p]; i = p; }
+    k[i] = key; v[i] = val;
+  }
+  /* returns the payload; its key is left in .topKey */
+  pop() {
+    const k = this.k, v = this.v, rv = v[0], rk = k[0], n = --this.n;
+    if (n > 0) {
+      const lk = k[n], lv = v[n];
+      let i = 0;
+      for (;;) {
+        let c = 2 * i + 1; if (c >= n) break;
+        if (c + 1 < n && k[c + 1] < k[c]) c++;
+        if (k[c] >= lk) break;
+        k[i] = k[c]; v[i] = v[c]; i = c;
+      }
+      k[i] = lk; v[i] = lv;
+    }
+    this.topKey = rk; return rv;
+  }
+}
+
+function csrWorkspace(csr) {
+  return {
+    dist: new Float64Array(csr.n),
+    prevN: new Int32Array(csr.n),
+    seen: new Int32Array(csr.n),    // epoch in which dist[i] was last written
+    done: new Int32Array(csr.n),    // epoch in which i was settled
+    flag: new Uint8Array(csr.n),
+    heap: new NumHeap(csr.off[csr.n] + 1),
+    epoch: 0,
+  };
+}
+
+/* The k nearest flagged nodes from s, in increasing distance.
+ * Writes indices into outIdx and distances into outDist; returns the count. */
+function csrNearestK(csr, W, s, k, outIdx, outDist) {
+  const off = csr.off, tgt = csr.tgt, alen = csr.alen;
+  const dist = W.dist, seen = W.seen, done = W.done, flag = W.flag, heap = W.heap;
+  const E = ++W.epoch;
+  heap.n = 0;
+  dist[s] = 0; seen[s] = E; heap.push(0, s);
+  let found = 0;
+  while (heap.n && found < k) {
+    const u = heap.pop(), d = heap.topKey;
+    if (done[u] === E) continue;
+    done[u] = E;
+    if (u !== s && flag[u]) { outIdx[found] = u; outDist[found] = d; found++; }
+    for (let p = off[u], q = off[u + 1]; p < q; p++) {
+      const w = tgt[p];
+      if (done[w] === E) continue;
+      const nd = d + alen[p];
+      if (seen[w] !== E || nd < dist[w]) { dist[w] = nd; seen[w] = E; heap.push(nd, w); }
+    }
+  }
+  return found;
+}
+
+/* Shortest path s->t as node INDICES, early-exiting once t is settled. */
+function csrPath(csr, W, s, t) {
+  if (s === t) return [s];
+  const off = csr.off, tgt = csr.tgt, alen = csr.alen;
+  const dist = W.dist, seen = W.seen, done = W.done, prevN = W.prevN, heap = W.heap;
+  const E = ++W.epoch;
+  heap.n = 0;
+  dist[s] = 0; seen[s] = E; heap.push(0, s);
+  let reached = false;
+  while (heap.n) {
+    const u = heap.pop(), d = heap.topKey;
+    if (done[u] === E) continue;
+    done[u] = E;
+    if (u === t) { reached = true; break; }
+    for (let p = off[u], q = off[u + 1]; p < q; p++) {
+      const w = tgt[p];
+      if (done[w] === E) continue;
+      const nd = d + alen[p];
+      if (seen[w] !== E || nd < dist[w]) { dist[w] = nd; seen[w] = E; prevN[w] = u; heap.push(nd, w); }
+    }
+  }
+  if (!reached) return null;
+  const path = [t]; let cur = t;
+  while (cur !== s) { cur = prevN[cur]; path.push(cur); }
+  return path.reverse();
+}
+
 /* ---- odd-node matching ---- *
  * The matching IS the overhead: covered = bare + (total matching weight), so
  * overhead_pct == 100 * matchWeight / bare. Cutting matching weight cuts route
@@ -259,15 +377,29 @@ function dijkstraPath(G, src, dst) {
  * So this is a real speed-for-quality trade: on the corpus it costs a median
  * ~+300ms (bun; ~4x that in V8) to buy 4.3-14.3 points of overhead.
  *
- * MATCH_K is the dial, and it is monotone: K=4 costs ~2.5x baseline and gets
- * ~85% of the quality win; K=12 costs ~4-6x for 100%; K=24 buys ~1% more.
- * Drop to 4 if solve latency matters more than the last point of overhead.
- * A per-node nearest-neighbour lower bound puts optimal matching ~2x below even
+ * MATCH_K is the speed/quality dial. Measured on manhattan-r12 (bun, median of
+ * 3), against the quality-neutral plain-greedy baseline at 96ms / 18.5%:
+ *
+ *     K=2   162ms  14.4%      K=8   279ms  14.2%      K=24  553ms  13.8%
+ *     K=4   212ms  14.2%      K=12  341ms  14.1%
+ *
+ * Quality saturates almost immediately: K=2 already captures ~93% of the win at
+ * 1.7x cost, while K=24 costs 5.8x for the last few tenths of a point.
+ *
+ * It is NOT monotone, despite looking that way on one map. More candidates can
+ * steer the greedy into a worse local optimum: on phoenix K=8 gives 26.6% but
+ * K=12 gives 27.0%, and on brattleboro K=2 (49.7%) beats K=4 (50.0%). Treat K
+ * as a knob to measure per corpus, not a quality guarantee.
+ *
+ * A per-node nearest-neighbour lower bound puts optimal matching well below even
  * K=24, so Blossom still has real headroom left — this is not the ceiling. */
 const MATCH_K = 12;            // candidate partners kept per odd node
 const MATCH_2OPT_SWEEPS = 12;  // 2-opt passes (converges in far fewer)
 
-function matchOdd(G, odd) {
+function matchOdd(G, odd, csr, W) {
+  csr = csr || buildCSR(G);
+  W = W || csrWorkspace(csr);
+  const outIdx = new Int32Array(MATCH_K), outDist = new Float64Array(MATCH_K);
   const pairs = [];
   const dmap = new Map();      // known odd-odd shortest distances, "min|max" -> d
   const dkey = (a, b) => a < b ? a + '|' + b : b + '|' + a;
@@ -280,14 +412,19 @@ function matchOdd(G, odd) {
 
   // --- sorted greedy over k-nearest candidate edges, re-seeded each round ---
   for (let round = 0; unmatched.size > 1 && round < 40; round++) {
-    const isU = n => unmatched.has(n);
+    // mark the still-unmatched set once per round, for O(1) tests inside the search
+    W.flag.fill(0);
+    for (const n of unmatched) W.flag[csr.index.get(n)] = 1;
     const cand = [];
-    for (const u of unmatched)
-      for (const [v, d] of dijkstraNearestK(G, u, isU, MATCH_K)) {
+    for (const u of unmatched) {
+      const cnt = csrNearestK(csr, W, csr.index.get(u), MATCH_K, outIdx, outDist);
+      for (let t = 0; t < cnt; t++) {
+        const v = csr.ids[outIdx[t]], d = outDist[t];
         const a = u < v ? u : v, b = u < v ? v : u;   // normalize orientation
         cand.push([d, a, b]);
         const k = a + '|' + b; if (!dmap.has(k)) dmap.set(k, d);
       }
+    }
     if (!cand.length) break;
     cand.sort((p, q) => p[0] - q[0] || (p[1] < q[1] ? -1 : p[1] > q[1] ? 1 : 0)
       || (p[2] < q[2] ? -1 : p[2] > q[2] ? 1 : 0));
@@ -354,9 +491,13 @@ function augment(G) {
 
   const odd = [...G.adj.keys()].filter(n => degree(G, n) % 2 === 1);
   if (odd.length < 2) return mult;
-  for (const [u, v] of matchOdd(G, odd)) {
-    const path = dijkstraPath(G, u, v);
-    if (!path) continue;
+  // one CSR + one scratch workspace for the whole component, reused by every
+  // search below (thousands of them)
+  const csr = buildCSR(G), W = csrWorkspace(csr);
+  for (const [u, v] of matchOdd(G, odd, csr, W)) {
+    const idxPath = csrPath(csr, W, csr.index.get(u), csr.index.get(v));
+    if (!idxPath) continue;
+    const path = idxPath.map(i => csr.ids[i]);
     for (let i = 0; i + 1 < path.length; i++) {
       const k = key(path[i], path[i + 1]);
       mult.set(k, (mult.get(k) || 0) + 1);
@@ -679,7 +820,7 @@ const API = { makeGraph, setNode, addEdge, planRuns, runToGPX, haversine, neares
 API._internal = {
   largestComponent, allComponents, dijkstra, augment, eulerCircuit,
   clusterNodes, splitRuns, degree, nearestNode, xmlEscape, contractDeg2,
-  dijkstraNearest, dijkstraNearestK, dijkstraPath, matchOdd,
+  dijkstraNearest, dijkstraNearestK, dijkstraPath, matchOdd, buildCSR, csrWorkspace, csrNearestK, csrPath,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 if (typeof self !== 'undefined') self.CoverageCore = API;
