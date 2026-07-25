@@ -12,7 +12,7 @@
  * This is a throwaway prototype to decide whether to build the real thing.
  */
 'use strict';
-const C = require('./coverage_core.js');
+const C = require('../coverage_core.js');
 const MI = 1609.344;
 const { contractDeg2, clusterNodes, allComponents, augment, eulerCircuit } = C._internal;
 

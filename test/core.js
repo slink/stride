@@ -4,7 +4,7 @@
  */
 'use strict';
 const assert = require('node:assert/strict');
-const C = require('./coverage_core.js');
+const C = require('../coverage_core.js');
 const MI = 1609.344;
 
 /* ---- tiny test runner ---- */

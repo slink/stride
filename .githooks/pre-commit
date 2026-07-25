@@ -20,6 +20,6 @@ done
 echo "  ok"
 
 echo "pre-commit: tests…"
-bun test_all.js
+bun test/all.js
 
 echo "pre-commit: passed"

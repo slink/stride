@@ -3,7 +3,9 @@
 Generates running routes that cover every street in an area, each under a
 chosen length, minimizing repeats — **entirely in the browser**. No backend.
 
-![STR1DE coverage plan for Cooper Square, Manhattan](screenshot.jpg)
+### ▶ [Try it live — slink.github.io/stride](https://slink.github.io/stride/)
+
+![STR1DE coverage plan for Cooper Square, Manhattan](docs/screenshot.jpg)
 
 *Cooper Square, Manhattan — 1.2 mi radius, 5 mi max run. **102 runs, 502.2 miles
 run to cover 440.2 street miles** (+14.1% repeat overhead), solved in about 2 s
@@ -31,8 +33,9 @@ on a Garmin/Coros/Suunto watch, or import it into Strava.
 
 ## Run it
 
-It's static files, but it needs a server because the app uses a Web Worker and
-`fetch`:
+The hosted copy is at **[slink.github.io/stride](https://slink.github.io/stride/)**.
+To run it yourself: it's static files, but it needs a server because the app uses
+a Web Worker and `fetch`:
 
 ```bash
 python3 -m http.server 8000
@@ -108,20 +111,26 @@ use a paid geocoder.** The public endpoints are a courtesy, not a backend.
 
 ## Files
 
+The app is the five files at the root — that's what GitHub Pages serves:
+
+- `index.html` — UI.
 - `coverage_core.js` — the solver: graph, degree-2 contraction, odd-node
   matching, Euler circuit, clustering, GPX. Runs in the browser and in Node.
 - `net_cache.js` — response cache, slim/delta encoding, cooldown arithmetic.
 - `worker.js` — Web Worker: Overpass JSON → graph → plan.
-- `index.html` — UI.
 - `demo.json` — offline sample.
-- `test_core.js`, `test_overpass.js`, `test_worker_sim.js`, `test_net_cache.js` —
-  assertion-based tests that exit non-zero on failure. Run all: `bun test_all.js`.
-- `attribution.js`, `measure_partition.js` — diagnostics behind the overhead and
-  zoning decisions; not part of the app.
+
+Everything else is supporting material:
+
+- `test/` — assertion-based suites that exit non-zero on failure.
+  `bun test/all.js` runs them all.
+- `tools/` — `attribution.js` and `measure_partition.js`, diagnostics behind the
+  overhead and zoning decisions; not part of the app.
+- `docs/` — README assets.
 
 ## Development
 
-Tests run on `bun` (or `node`): `bun test_all.js`. A pre-commit hook lints
+Tests run on `bun` (or `node`): `bun test/all.js`. A pre-commit hook lints
 whitespace and JS syntax and runs the suite. Enable it once per clone:
 
 ```bash

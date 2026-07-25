@@ -11,7 +11,7 @@
  * much. If 2-opt barely helps, Blossom won't either.
  */
 'use strict';
-const C = require('./coverage_core.js');
+const C = require('../coverage_core.js');
 const MI = 1609.344;
 const { dijkstra, largestComponent } = C._internal;
 

@@ -6,13 +6,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const C = require('./coverage_core.js');
+const C = require('../coverage_core.js');
 const MI = 1609.344;
 
 // Load worker.js in a sandbox that captures postMessage and stubs importScripts.
 const msgs = [];
 const sandbox = { CoverageCore: C, postMessage: m => msgs.push(m), onmessage: null };
-const workerPath = path.join(__dirname, 'worker.js');
+const workerPath = path.join(__dirname, '..', 'worker.js');
 const code = fs.readFileSync(workerPath, 'utf8').replace("importScripts('./coverage_core.js');", '');
 new Function('self', 'importScripts', code)(sandbox, () => {});
 

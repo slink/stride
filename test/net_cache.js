@@ -4,8 +4,8 @@
  */
 'use strict';
 const assert = require('node:assert/strict');
-const C = require('./coverage_core.js');
-const NC = require('./net_cache.js');
+const C = require('../coverage_core.js');
+const NC = require('../net_cache.js');
 
 /* Mirrors the worker's graph builder (worker.js uses importScripts), so the
  * round-trip test can compare slim-encoded data through the real consumer. */
